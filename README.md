@@ -65,6 +65,10 @@ Keep the extracted folder intact: the executables load the `5.3` runtime directo
 
 - MMD edge preview driven by PMX `edge_flag` and `edge_size`.
 - AMD FSR 1.0 EASU/RCAS quality presets for the EEVEE viewport and renders.
+- **GPU render button** in the Render menu (`GPU 渲染（图像/动画）`): picks the best GPU backend automatically — NVIDIA renders through Cycles CUDA (prebuilt kernels for sm_86/sm_89), AMD through HIP when available, and falls back to the GPU GooEngine/EEVEE. The previous engine is restored after the render.
+- **NVIDIA auto-acceleration**: on NVIDIA systems, Cycles CUDA devices are enabled automatically at startup (and via `GPU 加速设置…`), while Vulkan stays active for the viewport and the GPU CCD bake — CUDA and Vulkan work side by side.
+- **Auto GPU bake on VMD import**: importing a VMD onto a PMX-rigged model automatically runs the GPU CCD bake (`use_gpu`, Vulkan compute) over the motion's frame range and assigns the resulting FK Action. Toggle with the `Auto GPU Bake` import option.
+- GPU bake caches the compiled compute shader and the bone/chain/link constant buffers across calls, so repeat bakes skip the ~1–2 s shader compilation and constant uploads.
 - SekaiBlender branding, Chinese UI defaults and a 30 FPS startup timeline.
 
 ## Verified Workflows

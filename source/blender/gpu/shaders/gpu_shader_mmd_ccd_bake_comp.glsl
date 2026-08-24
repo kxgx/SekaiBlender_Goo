@@ -17,14 +17,15 @@ COMPUTE_SHADER_CREATE_INFO(gpu_shader_mmd_ccd_bake)
 
 #define kEps 1.0e-10f
 
-/* quat (w, x, y, z) 归一化 */
+/* quat (w, x, y, z) 归一化（与 v8.cc 一致：先取倒数再乘，避免除法舍入差异） */
 float4 quat_normalize(float4 q)
 {
   float len = sqrt(q.x * q.x + q.y * q.y + q.z * q.z + q.w * q.w);
   if (len < kEps) {
     return float4(1.0, 0.0, 0.0, 0.0);
   }
-  return q / len;
+  float inv = 1.0 / len;
+  return q * inv;
 }
 
 /* 数学 a * b（Hamilton） */
@@ -322,7 +323,7 @@ int dbg_frame = -1;
 /* 单链求解（与 solve_chain_v8 逐行对应）                              */
 /* -------------------------------------------------------------------- */
 
-void solve_chain_v8(MmdBakeChainConst chain, int frame_base, int chain_index)
+void solve_chain_v8(MmdBakeChainConst chain, int frame_base, int chain_index, int out_frame_base)
 {
   int target_idx = chain.target_bone_index;
   int effector_idx = chain.effector_bone_index;
@@ -409,8 +410,9 @@ void solve_chain_v8(MmdBakeChainConst chain, int frame_base, int chain_index)
                         axis_local.y * sin(half_angle),
                         axis_local.z * sin(half_angle));
 
-      /* D3DX 反序：q_cur = delta * q_cur */
-      float4 q_cur = frame_out_buf[frame_base + link_idx].q_current_mmd;
+      /* D3DX 反序：q_cur = delta * q_cur（紧凑输出槽位） */
+      int out_idx = link.out_index;
+      float4 q_cur = frame_out_buf[out_frame_base + out_idx].q_current_mmd;
       q_cur = quat_mul(delta, q_cur);
 
       /* 首轮：q_cur = q_cur * q_base */
@@ -423,7 +425,7 @@ void solve_chain_v8(MmdBakeChainConst chain, int frame_base, int chain_index)
             link.limit_min_mmd.xyz, link.limit_max_mmd.xyz, q_cur, iteration_index, iterations);
       }
 
-      frame_out_buf[frame_base + link_idx].q_current_mmd = q_cur;
+      frame_out_buf[out_frame_base + out_idx].q_current_mmd = q_cur;
 
       if (dbg_frame == 0 && iteration_index == 0) {
         int dbg_base = chain_count * 6 + (chain_index * 4 + runtime_order) * 32;
@@ -459,15 +461,17 @@ void solve_chain_v8(MmdBakeChainConst chain, int frame_base, int chain_index)
 
       /* 刷新 links[0..current] 反向 + effector 折叠到 links[0] */
       for (int refresh_index = runtime_order; refresh_index >= 0; refresh_index--) {
-        int bone_idx = link_const_buf[chain.link_offset + refresh_index].bone_index;
+        MmdBakeLinkConst rlink = link_const_buf[chain.link_offset + refresh_index];
+        int bone_idx = rlink.bone_index;
         int parent = int(bone_const_buf[bone_idx].parent_index);
+        float4 rq = frame_out_buf[out_frame_base + rlink.out_index].q_current_mmd;
         float3 rr0, rr1, rr2;
-        quat_to_row3(frame_out_buf[frame_base + bone_idx].q_current_mmd, rr0, rr1, rr2);
+        quat_to_row3(rq, rr0, rr1, rr2);
         float3 m0, m1, m2, m3;
         compose_pivot_mul_parent(frame_base + bone_idx,
                                  (parent >= 0) ? (frame_base + parent) : -1,
                                  bone_const_buf[bone_idx].base_pos_mmd,
-                                 frame_out_buf[frame_base + bone_idx].q_current_mmd,
+                                 rq,
                                  m0, m1, m2, m3);
         frame_set_m0(frame_base + bone_idx, m0, m1, m2, m3);
       }
@@ -506,9 +510,13 @@ void main()
     }
   }
 
-  /* 1. q_current 初始 identity */
+  /* 1. q_current 初始 identity（仅链骨有紧凑输出槽位） */
+  int out_frame_base = int(frame) * link_count;
   for (int i = 0; i < bone_count; i++) {
-    frame_out_buf[frame_base + i].q_current_mmd = float4(1.0, 0.0, 0.0, 0.0);
+    int out_idx = bone_const_buf[i].out_index;
+    if (out_idx >= 0) {
+      frame_out_buf[out_frame_base + out_idx].q_current_mmd = float4(1.0, 0.0, 0.0, 0.0);
+    }
   }
 
   /* 2. 骨架 m0 初始化（与 v8.cc 662-693 行对应） */
@@ -550,6 +558,6 @@ void main()
 
   /* 3. 按顺序求解每条链 */
   for (int c = 0; c < chain_count; c++) {
-    solve_chain_v8(chain_const_buf[c], frame_base, c);
+    solve_chain_v8(chain_const_buf[c], frame_base, c, out_frame_base);
   }
 }

@@ -513,6 +513,13 @@ class TOPBAR_MT_render(Menu):
 
         layout.separator()
 
+        layout.operator("sekai.gpu_render", text="GPU 渲染（图像）", icon='RENDER_STILL')
+        props = layout.operator("sekai.gpu_render", text="GPU 渲染（动画）", icon='RENDER_ANIMATION')
+        props.animation = True
+        layout.operator("sekai.gpu_auto_setup", text="GPU 加速设置…", icon='SETTINGS')
+
+        layout.separator()
+
         if can_render_seq and (seq_scene != scene):
             props = layout.operator("render.render", text="Render Sequencer Image", icon='RENDER_STILL')
             props.use_viewport = True

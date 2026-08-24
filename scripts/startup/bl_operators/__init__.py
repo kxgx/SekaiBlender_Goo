@@ -36,6 +36,7 @@ _modules = [
     "render",
     "rigidbody",
     "screen_play_rendered_anim",
+    "sekai_gpu",
     "sequencer",
     "spreadsheet",
     "userpref",
@@ -73,6 +74,7 @@ def register():
     bone_selection_sets.register()
     copy_global_transform.register()
     project.register()
+    sekai_gpu.register()
 
 
 def unregister():
@@ -85,6 +87,7 @@ def unregister():
     bone_selection_sets.unregister()
     copy_global_transform.unregister()
     project.unregister()
+    sekai_gpu.unregister()
 
     for mod in reversed(_modules_loaded):
         for cls in reversed(mod.classes):

@@ -28,6 +28,7 @@
 
 #include "BLI_string.hh"
 #include "BLI_string_utf8.hh"
+#include "BLI_listbase.hh"
 #include "BLI_path_utils.hh"
 
 #include "DEG_depsgraph.hh"
@@ -810,6 +811,65 @@ wmOperatorStatus wm_vmd_import_exec(bContext *C, wmOperator *op)
   WM_event_add_notifier(C, NC_ANIMATION | ND_NLA_ACTCHANGE, nullptr);
   WM_event_add_notifier(C, NC_ANIMATION | ND_ANIMCHAN | NA_EDITED, nullptr);
   WM_event_add_notifier(C, NC_SCENE | ND_OB_ACTIVE, scene);
+
+  /* R8-GPU：导入动作后自动执行 GPU CCD 烘焙（FK 曲线）。
+   * 仅在模型带 PMX IK 定义时执行——合成测试骨架（无 IK 定义）不产生额外
+   * Action，避免污染无 IK 的导入流程。烘焙使用 use_gpu=True（Vulkan
+   * compute），并把生成的 "<VMD Action> | Baked" 设为活动 Action。 */
+  if (RNA_boolean_get(op->ptr, "auto_bake_gpu")) {
+    io::pmx::PMXBoneIKDefinitionSet ik_def;
+    const bool has_ik = io::pmx::read_bone_ik_definition(target->id, ik_def) &&
+                        !ik_def.ik_bones.empty();
+    if (has_ik && result.action.first_frame >= 0 &&
+        result.action.last_frame >= result.action.first_frame)
+    {
+      ViewLayer *view_layer = CTX_data_view_layer(C);
+      Base *base = BKE_view_layer_base_find(view_layer, target);
+      if (base != nullptr) {
+        Base *old_active = view_layer->basact;
+        view_layer->basact = base;
+        wmOperatorType *bake_ot = WM_operatortype_find("WM_OT_mmd_bake_motion", false);
+        if (bake_ot != nullptr) {
+          PointerRNA ptr = WM_operator_properties_create_ptr(bake_ot);
+          RNA_int_set(&ptr, "frame_start", result.action.first_frame);
+          RNA_int_set(&ptr, "frame_end", result.action.last_frame);
+          RNA_float_set(&ptr, "coordinate_scale", options.coordinate_scale);
+          RNA_boolean_set(&ptr, "use_gpu", true);
+          const wmOperatorStatus bake_status = WM_operator_name_call_ptr(
+              C, bake_ot, wm::OpCallContext::ExecDefault, &ptr, nullptr);
+          WM_operator_properties_free(&ptr);
+          if (bake_status == OPERATOR_FINISHED) {
+            AnimData *adt = BKE_animdata_from_id(&target->id);
+            bAction *source_action = adt != nullptr ? adt->action : nullptr;
+            if (source_action != nullptr) {
+              const std::string bake_name = std::string(source_action->id.name + 2) +
+                                            " | Baked";
+              bAction *baked = static_cast<bAction *>(
+                  BLI_findstring(&bmain->actions, bake_name.c_str(), offsetof(ID, name) + 2));
+              if (baked != nullptr) {
+                animrig::assign_action(baked, target->id);
+                /* 烘焙出的 FK 曲线覆盖所有链骨 → 全部链视为纯 FK，挂起所有
+                 * MMD 近似 IK 约束，避免在已解算曲线上二次求解。 */
+                vmd_suspend_mmd_approx_constraints(bmain, target);
+                BKE_reportf(op->reports,
+                            RPT_INFO,
+                            "GPU bake complete: '%s' assigned to '%s'",
+                            bake_name.c_str(),
+                            target->id.name + 2);
+              }
+            }
+          }
+        }
+        view_layer->basact = old_active;
+      }
+    }
+    else if (!has_ik) {
+      BKE_report(op->reports,
+                 RPT_INFO,
+                 "Auto GPU bake skipped: model has no PMX IK definition");
+    }
+  }
+
   return OPERATOR_FINISHED;
 }
 
@@ -939,6 +999,7 @@ void wm_vmd_import_draw(bContext * /*C*/, wmOperator *op)
               UI_ITEM_NONE,
               "VMD Native Bezier",
               ICON_NONE);
+  layout.prop(op->ptr, "auto_bake_gpu", UI_ITEM_NONE, "Auto GPU Bake", ICON_NONE);
 }
 
 void wm_vmd_camera_import_draw(bContext * /*C*/, wmOperator *op)
@@ -1259,6 +1320,12 @@ void WM_OT_vmd_import(wmOperatorType *ot)
                   true,
                   "VMD Native Bezier",
                   "Use VMD-embedded bezier interpolation for bone tracks instead of linear");
+  RNA_def_boolean(ot->srna,
+                  "auto_bake_gpu",
+                  true,
+                  "Auto GPU Bake",
+                  "After import, run the GPU CCD bake automatically and assign the "
+                  "resulting FK Action (only for models with PMX IK definitions)");
   WM_operator_properties_id_lookup(ot, false);
 
   PropertyRNA *prop = RNA_def_string(ot->srna, "filter_glob", "*.vmd", 0, "Extension Filter", "");

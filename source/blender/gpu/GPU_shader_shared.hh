@@ -274,7 +274,7 @@ TestOutput test_output(TestOutputRawData expect, TestOutputRawData result, bool 
 
 struct [[host_shared]] MmdBakeBoneConst {
   packed_float3 base_pos_mmd;
-  float _pad0; /* std430：vec3 成员对齐 16，其后成员从偏移 16 开始 */
+  int out_index; /* 链骨的紧凑输出槽位，非链骨为 -1 */
   int parent_index;
   int flags; /* 1=target 2=link 4=anchor */
   float _pad1; /* 结构体对齐 16，数组步长补齐到 32B */
@@ -293,8 +293,8 @@ struct [[host_shared]] MmdBakeChainConst {
 struct [[host_shared]] MmdBakeLinkConst {
   int bone_index;
   int has_limit;
-  float _pad0; /* float4 aligns to 16 */
-  float _pad1;
+  int out_index; /* 该 link 的紧凑输出槽位 */
+  float _pad1; /* float4 aligns to 16 */
   float4 limit_min_mmd; /* .xyz 有效，w 为填充（GLSL std430 vec3 对齐 16） */
   float4 limit_max_mmd;
 };

@@ -16,9 +16,58 @@
 #include "WM_api.hh"
 #include "DRW_engine.hh"
 
+#include "BLI_time.hh"
+
 #include <cstring>
 
 namespace blender::mmd {
+
+/* -------------------------------------------------------------------- */
+/* GPU 资源缓存（R8-GPU）                                                */
+/* -------------------------------------------------------------------- */
+
+/* 烘焙的常量数据（骨骼/链/link）与求解器无关，且着色器编译是首烤 ~1-2s 的
+ * 大头。把它们连同已编译着色器一起按内容缓存，跨烘焙调用复用，显著降低
+ * 自动烘焙（VMD 导入触发）与重复烘焙的开销。缓存以活动 GPU 上下文为界：
+ * 上下文变化（如 offscreen 上下文重建）时旧资源随上下文销毁，指针直接
+ * 失效重置（不再 free，避免 double-free）。 */
+namespace {
+
+struct MmdBakeGpuCache {
+  GPUContext *context = nullptr;
+  gpu::Shader *shader = nullptr;
+  gpu::StorageBuf *bone_buf = nullptr;
+  gpu::StorageBuf *chain_buf = nullptr;
+  gpu::StorageBuf *link_buf = nullptr;
+  std::vector<uint8_t> bone_bytes;
+  std::vector<uint8_t> chain_bytes;
+  std::vector<uint8_t> link_bytes;
+};
+
+static MmdBakeGpuCache g_bake_cache;
+
+static bool cache_matches(const std::vector<uint8_t> &cached,
+                          const void *data,
+                          const size_t size)
+{
+  return cached.size() == size && (size == 0 || std::memcmp(cached.data(), data, size) == 0);
+}
+
+static void bake_cache_reset()
+{
+  g_bake_cache = MmdBakeGpuCache();
+}
+
+static std::vector<uint8_t> bytes_of(const void *data, const size_t size)
+{
+  std::vector<uint8_t> bytes(size);
+  if (size > 0) {
+    std::memcpy(bytes.data(), data, size);
+  }
+  return bytes;
+}
+
+}  // namespace
 
 /* -------------------------------------------------------------------- */
 /* GPU 批量求解                                                          */
@@ -46,20 +95,35 @@ bool mmd_ccd_bake_gpu(MmdCCDBakeBuffers &buffers, std::vector<float> &r_q_curren
     }
   }
 
-  gpu::Shader *shader = GPU_shader_create_from_info_name("gpu_shader_mmd_ccd_bake");
-  if (shader == nullptr) {
-    std::fprintf(stderr, "[BAKEDBG] shader create failed\n");
-    return false;
+  GPUContext *active_ctx = GPU_context_active_get();
+  if (g_bake_cache.context != active_ctx) {
+    /* 上下文变化：旧 GPU 资源已随旧上下文销毁，缓存直接失效（不再 free）。 */
+    bake_cache_reset();
   }
-  std::fprintf(stderr, "[BAKEDBG] shader ok\n");
+
+  const double t0 = BLI_time_now_seconds();
+  gpu::Shader *shader = g_bake_cache.shader;
+  if (shader == nullptr) {
+    shader = GPU_shader_create_from_info_name("gpu_shader_mmd_ccd_bake");
+    if (shader == nullptr) {
+      std::fprintf(stderr, "[BAKETIME] shader create failed\n");
+      return false;
+    }
+    g_bake_cache.shader = shader;
+    g_bake_cache.context = active_ctx;
+  }
+  const double shader_ms = (BLI_time_now_seconds() - t0) * 1000.0;
+  std::fprintf(stderr, "[BAKETIME] shader ready (%.1f ms, %s)\n",
+               shader_ms,
+               shader_ms < 1.0 ? "cached" : "compiled");
 
   /* 打包 GPU 结构（与 gpu_shader_mmd_ccd_infos.hh 布局一致）。
    * 注意：GLSL 侧 base_pos 是 vec3（packed_float3），std430 下 vec3 成员
    * 对齐 16 → 结构体对齐 16 → 数组步长补齐到 32B。C++ 侧必须逐字节一致
-   * （base@0, _pad0@12, parent@16, flags@20, _pad1@24, _pad2@28）。 */
+   * （base@0, out_index@12, parent@16, flags@20, _pad1@24, _pad2@28）。 */
   struct GPUBoneConst {
     float base_pos[3];
-    float _pad0;
+    int out_index; /* 链骨紧凑输出槽位，非链骨 -1 */
     int parent;
     int flags;
     float _pad1;
@@ -76,7 +140,8 @@ bool mmd_ccd_bake_gpu(MmdCCDBakeBuffers &buffers, std::vector<float> &r_q_curren
   struct GPULinkConst {
     int bone;
     int has_limit;
-    float pad[2]; /* float4 aligns to 16 */
+    int out_index; /* 该 link 的紧凑输出槽位 */
+    float _pad1; /* float4 aligns to 16 */
     float limit_min[4];
     float limit_max[4];
   };
@@ -91,12 +156,21 @@ bool mmd_ccd_bake_gpu(MmdCCDBakeBuffers &buffers, std::vector<float> &r_q_curren
     float q_current[4];
   };
 
+  /* 骨骼 → 链骨输出槽位（仅链骨有效）。 */
+  std::vector<int> bone_out_slot(bone_count, -1);
+  for (size_t li = 0; li < buffers.links.size(); li++) {
+    const int bone = buffers.links[li].bone;
+    if (bone >= 0 && bone < bone_count) {
+      bone_out_slot[bone] = int(li);
+    }
+  }
+
   std::vector<GPUBoneConst> gpu_bones(bone_count);
   for (int i = 0; i < bone_count; i++) {
     gpu_bones[i].base_pos[0] = buffers.bones[i].base_pos[0];
     gpu_bones[i].base_pos[1] = buffers.bones[i].base_pos[1];
     gpu_bones[i].base_pos[2] = buffers.bones[i].base_pos[2];
-    gpu_bones[i]._pad0 = 0.0f;
+    gpu_bones[i].out_index = bone_out_slot[i];
     gpu_bones[i].parent = buffers.bones[i].parent;
     gpu_bones[i].flags = buffers.bones[i].flags;
     gpu_bones[i]._pad1 = 0.0f;
@@ -117,6 +191,8 @@ bool mmd_ccd_bake_gpu(MmdCCDBakeBuffers &buffers, std::vector<float> &r_q_curren
   for (size_t i = 0; i < buffers.links.size(); i++) {
     gpu_links[i].bone = buffers.links[i].bone;
     gpu_links[i].has_limit = buffers.links[i].has_limit;
+    gpu_links[i].out_index = int(i);
+    gpu_links[i]._pad1 = 0.0f;
     for (int k = 0; k < 3; k++) {
       gpu_links[i].limit_min[k] = buffers.links[i].limit_min[k];
       gpu_links[i].limit_max[k] = buffers.links[i].limit_max[k];
@@ -126,8 +202,10 @@ bool mmd_ccd_bake_gpu(MmdCCDBakeBuffers &buffers, std::vector<float> &r_q_curren
   }
 
   const size_t frame_data_count = size_t(frame_count) * size_t(bone_count);
+  const size_t link_count = buffers.links.size();
+  const size_t out_data_count = size_t(frame_count) * link_count;
   std::vector<GPUFrameBone> gpu_frames(frame_data_count);
-  std::vector<GPUFrameOut> gpu_out(frame_data_count);
+  std::vector<GPUFrameOut> gpu_out(out_data_count);
   for (size_t i = 0; i < frame_data_count; i++) {
     const MmdCCDBakeBuffers::FrameBone &src = buffers.frames[i];
     GPUFrameBone &dst = gpu_frames[i];
@@ -138,26 +216,74 @@ bool mmd_ccd_bake_gpu(MmdCCDBakeBuffers &buffers, std::vector<float> &r_q_curren
       dst.m0_row2[k] = src.m0[2][k];
       dst.m0_row3[k] = src.m0[3][k];
     }
-    /* q_current 初始为 identity（与 CPU 参照路径一致）。零四元数会在
-     * quat_normalize 的零保护下吞掉首轮 delta，导致与 CPU 结果发散。 */
+  }
+  /* q_current 初始为 identity（与 CPU 参照路径一致）。零四元数会在
+   * quat_normalize 的零保护下吞掉首轮 delta，导致与 CPU 结果发散。 */
+  for (size_t i = 0; i < out_data_count; i++) {
     gpu_out[i].q_current[0] = 1.0f;
     gpu_out[i].q_current[1] = 0.0f;
     gpu_out[i].q_current[2] = 0.0f;
     gpu_out[i].q_current[3] = 0.0f;
   }
 
-  gpu::StorageBuf *bone_buf = GPU_storagebuf_create_ex(
-      sizeof(GPUBoneConst) * gpu_bones.size(), gpu_bones.data(), GPU_USAGE_STATIC, "mmd_bake_bones");
-  gpu::StorageBuf *chain_buf = GPU_storagebuf_create_ex(sizeof(GPUChainConst) * gpu_chains.size(),
-                                                      gpu_chains.data(),
-                                                      GPU_USAGE_STATIC,
-                                                      "mmd_bake_chains");
-  gpu::StorageBuf *link_buf = GPU_storagebuf_create_ex(
-      sizeof(GPULinkConst) * gpu_links.size(), gpu_links.data(), GPU_USAGE_STATIC, "mmd_bake_links");
+
+  /* 常量缓冲（骨骼/链/link）按内容缓存：模型不变时零上传。 */
+  gpu::StorageBuf *bone_buf = g_bake_cache.bone_buf;
+  gpu::StorageBuf *chain_buf = g_bake_cache.chain_buf;
+  gpu::StorageBuf *link_buf = g_bake_cache.link_buf;
+  const bool const_ok =
+      cache_matches(g_bake_cache.bone_bytes, gpu_bones.data(),
+                    sizeof(GPUBoneConst) * gpu_bones.size()) &&
+      cache_matches(g_bake_cache.chain_bytes, gpu_chains.data(),
+                    sizeof(GPUChainConst) * gpu_chains.size()) &&
+      cache_matches(g_bake_cache.link_bytes, gpu_links.data(),
+                    sizeof(GPULinkConst) * gpu_links.size());
+  if (bone_buf != nullptr && !const_ok) {
+    GPU_storagebuf_free(bone_buf);
+    GPU_storagebuf_free(chain_buf);
+    GPU_storagebuf_free(link_buf);
+    bone_buf = chain_buf = link_buf = nullptr;
+  }
+  const double t_upload0 = BLI_time_now_seconds();
+  if (bone_buf == nullptr) {
+    bone_buf = GPU_storagebuf_create_ex(sizeof(GPUBoneConst) * gpu_bones.size(),
+                                        gpu_bones.data(),
+                                        GPU_USAGE_STATIC,
+                                        "mmd_bake_bones");
+    chain_buf = GPU_storagebuf_create_ex(sizeof(GPUChainConst) * gpu_chains.size(),
+                                         gpu_chains.data(),
+                                         GPU_USAGE_STATIC,
+                                         "mmd_bake_chains");
+    link_buf = GPU_storagebuf_create_ex(sizeof(GPULinkConst) * gpu_links.size(),
+                                        gpu_links.data(),
+                                        GPU_USAGE_STATIC,
+                                        "mmd_bake_links");
+    g_bake_cache.bone_buf = bone_buf;
+    g_bake_cache.chain_buf = chain_buf;
+    g_bake_cache.link_buf = link_buf;
+    g_bake_cache.bone_bytes = bytes_of(gpu_bones.data(),
+                                       sizeof(GPUBoneConst) * gpu_bones.size());
+    g_bake_cache.chain_bytes = bytes_of(gpu_chains.data(),
+                                        sizeof(GPUChainConst) * gpu_chains.size());
+    g_bake_cache.link_bytes = bytes_of(gpu_links.data(),
+                                       sizeof(GPULinkConst) * gpu_links.size());
+  }
+  const double const_upload_ms = (BLI_time_now_seconds() - t_upload0) * 1000.0;
+  std::fprintf(stderr, "[BAKETIME] const buffers (%.1f ms, %s)\n",
+               const_upload_ms,
+               const_upload_ms < 1.0 ? "cached" : "uploaded");
+
+  const double t_frame0 = BLI_time_now_seconds();
   gpu::StorageBuf *frame_buf = GPU_storagebuf_create_ex(
       sizeof(GPUFrameBone) * gpu_frames.size(), gpu_frames.data(), GPU_USAGE_STATIC, "mmd_bake_frames");
   gpu::StorageBuf *out_buf = GPU_storagebuf_create_ex(
       sizeof(GPUFrameOut) * gpu_out.size(), gpu_out.data(), GPU_USAGE_STATIC, "mmd_bake_out");
+  const double frame_upload_ms = (BLI_time_now_seconds() - t_frame0) * 1000.0;
+  std::fprintf(stderr,
+               "[BAKETIME] frame upload %zu bones x %d frames (%.1f ms)\n",
+               gpu_bones.size(),
+               frame_count,
+               frame_upload_ms);
 
   /* 调试缓冲：链数据 + iter0 追踪（仅 frame 0 写入）。 */
   const int dbg_chain_count = int(buffers.chains.size());
@@ -169,13 +295,16 @@ bool mmd_ccd_bake_gpu(MmdCCDBakeBuffers &buffers, std::vector<float> &r_q_curren
   if (bone_buf == nullptr || chain_buf == nullptr || link_buf == nullptr || frame_buf == nullptr ||
       out_buf == nullptr || dbg_buf == nullptr)
   {
+    /* 常量缓冲创建失败时同步失效缓存，避免悬垂指针。 */
+    g_bake_cache.bone_buf = bone_buf;
+    g_bake_cache.chain_buf = chain_buf;
+    g_bake_cache.link_buf = link_buf;
     GPU_storagebuf_free(bone_buf);
     GPU_storagebuf_free(chain_buf);
     GPU_storagebuf_free(link_buf);
     GPU_storagebuf_free(frame_buf);
     GPU_storagebuf_free(out_buf);
     GPU_storagebuf_free(dbg_buf);
-    GPU_shader_free(shader);
     return false;
   }
 
@@ -205,13 +334,24 @@ bool mmd_ccd_bake_gpu(MmdCCDBakeBuffers &buffers, std::vector<float> &r_q_curren
   GPU_shader_uniform_1i(shader, "bone_count", bone_count);
   GPU_shader_uniform_1i(shader, "chain_count", int(buffers.chains.size()));
   GPU_shader_uniform_1i(shader, "frame_count", frame_count);
+  GPU_shader_uniform_1i(shader, "link_count", int(link_count));
 
   const int local_size = 64;
   const int group_count = (frame_count + local_size - 1) / local_size;
+  const double t_dispatch0 = BLI_time_now_seconds();
   GPU_compute_dispatch(shader, group_count, 1, 1);
   GPU_memory_barrier(GPU_BARRIER_SHADER_STORAGE);
+  const double dispatch_ms = (BLI_time_now_seconds() - t_dispatch0) * 1000.0;
 
+  const double t_readback0 = BLI_time_now_seconds();
   GPU_storagebuf_read(out_buf, gpu_out.data());
+  const double readback_ms = (BLI_time_now_seconds() - t_readback0) * 1000.0;
+  std::fprintf(stderr,
+               "[BAKETIME] dispatch %d groups x %d invocations (%.2f ms) + readback (%.2f ms)\n",
+               group_count,
+               local_size,
+               dispatch_ms,
+               readback_ms);
 
   /* 验证 frame_buf 上传数据完好性（bone 32/436 的 q_base 与 m0）。 */
   {
@@ -283,14 +423,11 @@ bool mmd_ccd_bake_gpu(MmdCCDBakeBuffers &buffers, std::vector<float> &r_q_curren
   GPU_storagebuf_unbind(frame_buf);
   GPU_storagebuf_unbind(out_buf);
   GPU_storagebuf_unbind(dbg_buf);
-  GPU_storagebuf_free(bone_buf);
-  GPU_storagebuf_free(chain_buf);
-  GPU_storagebuf_free(link_buf);
+  /* 常量缓冲与着色器保留在缓存中复用；仅释放每调用资源。 */
   GPU_storagebuf_free(frame_buf);
   GPU_storagebuf_free(out_buf);
   GPU_storagebuf_free(dbg_buf);
   GPU_shader_unbind();
-  GPU_shader_free(shader);
 
   if (temp_context) {
     /* 注意：后台模式下不在此禁用临时上下文。退出路径（WM_exit → gpu_is_init
@@ -298,10 +435,22 @@ bool mmd_ccd_bake_gpu(MmdCCDBakeBuffers &buffers, std::vector<float> &r_q_curren
      * 这里提前 disable 再让退出路径 re-enable，在 -b 模式会挂死。 */
   }
 
-  r_q_current.resize(frame_data_count * 4);
+  /* 紧凑输出（仅链骨）散射回 frame×bone 布局；非链骨保持 identity。 */
+  r_q_current.assign(frame_data_count * 4, 0.0f);
   for (size_t i = 0; i < frame_data_count; i++) {
-    for (int k = 0; k < 4; k++) {
-      r_q_current[i * 4 + k] = gpu_out[i].q_current[k];
+    r_q_current[i * 4 + 0] = 1.0f;
+  }
+  for (int f = 0; f < frame_count; f++) {
+    for (size_t li = 0; li < link_count; li++) {
+      const int bone = buffers.links[li].bone;
+      if (bone < 0 || bone >= bone_count) {
+        continue;
+      }
+      const GPUFrameOut &qo = gpu_out[size_t(f) * link_count + li];
+      const size_t dst = (size_t(f) * bone_count + bone) * 4;
+      for (int k = 0; k < 4; k++) {
+        r_q_current[dst + k] = qo.q_current[k];
+      }
     }
   }
   return true;
