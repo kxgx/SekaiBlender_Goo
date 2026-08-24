@@ -1,0 +1,4 @@
+# Git LFS 对象库链接到 SekaiBlender 官方仓库（保持历史 LFS 指针可解析，
+# 新仓库不重复上传二进制资产）。
+[lfs]
+	url = https://github.com/ShiJieWorld/SekaiBlender.git/info/lfs

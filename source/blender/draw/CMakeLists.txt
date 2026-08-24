@@ -471,8 +471,10 @@ set(GLSL_SRC
   engines/eevee/shaders/eevee_surf_capture.bsl.hh
   engines/eevee/shaders/eevee_surf_common.bsl.hh
   engines/eevee/shaders/eevee_surf_deferred.bsl.hh
+  engines/eevee/shaders/eevee_surf_deferred_depth.bsl.hh
   engines/eevee/shaders/eevee_surf_depth.bsl.hh
   engines/eevee/shaders/eevee_surf_forward.bsl.hh
+  engines/eevee/shaders/eevee_surf_forward_depth.bsl.hh
   engines/eevee/shaders/eevee_surf_hybrid.bsl.hh
   engines/eevee/shaders/eevee_surf_occupancy.bsl.hh
   engines/eevee/shaders/eevee_surf_shadow.bsl.hh

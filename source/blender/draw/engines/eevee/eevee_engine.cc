@@ -104,4 +104,33 @@ RenderEngineType DRW_engine_viewport_eevee_type = {
     },
 };
 
+/* Goo Engine 入口（goo-engine 移植 B 包）：复用 Eevee Next 渲染/视口管线，
+ * 独立引擎 id，供 goo 特性（SetDepth 深度偏移等）在引擎内按需开关。 */
+RenderEngineType DRW_engine_viewport_goo_type = {
+    /*next*/ nullptr,
+    /*prev*/ nullptr,
+    /*idname*/ "BLENDER_GOOENGINE",
+    /*name*/ N_("Goo Engine"),
+    /*flag*/ RE_INTERNAL | RE_USE_PREVIEW | RE_USE_STEREO_VIEWPORT | RE_USE_GPU_CONTEXT,
+    /*update*/ nullptr,
+    /*render*/ &eevee_render,
+    /*render_frame_finish*/ nullptr,
+    /*draw*/ nullptr,
+    /*bake*/ nullptr,
+    /*view_update*/ nullptr,
+    /*view_draw*/ nullptr,
+    /*view_pause*/ nullptr,
+    /*view_resume*/ nullptr,
+    /*update_script_node*/ nullptr,
+    /*update_render_passes*/ &eevee_render_update_passes,
+    /*update_custom_camera*/ nullptr,
+    /*draw_engine*/ nullptr,
+    /*rna_ext*/
+    {
+        /*data*/ nullptr,
+        /*srna*/ nullptr,
+        /*call*/ nullptr,
+    },
+};
+
 }  // namespace blender

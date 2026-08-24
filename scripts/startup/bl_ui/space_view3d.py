@@ -6652,7 +6652,7 @@ class VIEW3D_PT_shading_lighting(Panel):
             return True
         if shading.type == 'RENDERED':
             engine = context.scene.render.engine
-            if engine == 'BLENDER_EEVEE':
+            if engine in {'BLENDER_EEVEE', 'BLENDER_GOOENGINE'}:
                 return True
         return False
 
@@ -6957,7 +6957,7 @@ class VIEW3D_PT_shading_render_pass(Panel):
     bl_region_type = 'HEADER'
     bl_label = "Render Pass"
     bl_parent_id = "VIEW3D_PT_shading"
-    COMPAT_ENGINES = {'BLENDER_EEVEE'}
+    COMPAT_ENGINES = {'BLENDER_EEVEE', 'BLENDER_GOOENGINE'}
 
     @classmethod
     def poll(cls, context):

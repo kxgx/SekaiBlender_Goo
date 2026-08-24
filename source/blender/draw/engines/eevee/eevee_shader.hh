@@ -300,7 +300,8 @@ class ShaderModule {
   ShaderGroups static_shaders_load(ShaderGroups request_bits, bool block_until_ready);
   void material_create_info_pipelines_amend(eMaterialGeometry geometry_type,
                                             eMaterialPipeline pipeline_type,
-                                            gpu::shader::ShaderCreateInfo &r_info);
+                                            gpu::shader::ShaderCreateInfo &r_info,
+                                            bool use_set_depth = false);
 };
 
 }  // namespace blender::eevee

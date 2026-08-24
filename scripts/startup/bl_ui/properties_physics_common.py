@@ -58,6 +58,7 @@ class PHYSICS_PT_add(PhysicButtonsPanel, Panel):
     COMPAT_ENGINES = {
         'BLENDER_RENDER',
         'BLENDER_EEVEE',
+        'BLENDER_GOOENGINE',
         'BLENDER_WORKBENCH',
     }
 

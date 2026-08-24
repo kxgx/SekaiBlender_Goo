@@ -800,6 +800,34 @@ Shader *ShaderCompiler::compile(const shader::ShaderCreateInfo &orig_info, bool 
   const_cast<ShaderCreateInfo &>(orig_info).finalize();
   BLI_assert(orig_info.do_static_compilation_ || orig_info.is_generated_);
 
+  /* Goo-engine 移植：材质节点 GLSL（生成代码的依赖文件）写 gl_FragDepth 时，finalize 的
+   * additional-info 合并会把 depth_write 重置为 UNCHANGED（early_fragment_test 分支）；
+   * 此处按最终源码文本/依赖文件名兜底恢复，保证 Vulkan 后端注入 FragDepth 输出声明。 */
+  {
+    bool frag_depth_used =
+        orig_info.fragment_source_.find("gl_FragDepth") != std::string::npos;
+    if (!frag_depth_used) {
+      for (const GeneratedSource &gen : orig_info.generated_sources) {
+        if (gen.content.find("gl_FragDepth") != std::string::npos) {
+          frag_depth_used = true;
+          break;
+        }
+        for (const StringRefNull &dep : gen.dependencies) {
+          if (StringRef(dep.c_str()).find("set_depth") != StringRef::not_found) {
+            frag_depth_used = true;
+            break;
+          }
+        }
+        if (frag_depth_used) {
+          break;
+        }
+      }
+    }
+    if (frag_depth_used && orig_info.depth_write_ == DepthWrite::UNCHANGED) {
+      const_cast<ShaderCreateInfo &>(orig_info).depth_write(DepthWrite::ANY);
+    }
+  }
+
   TimePoint start_time;
 
   if (Context::get()) {

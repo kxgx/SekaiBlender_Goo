@@ -18,6 +18,7 @@ set(INC_SYS
 set(SRC
   IO_vmd.cc
   vmd_action.cc
+  vmd_adapt.cc
   vmd_camera_action.cc
   vmd_mapping.cc
   vmd_morph_mapping.cc
@@ -27,6 +28,7 @@ set(SRC
 
   IO_vmd.hh
   vmd_action.hh
+  vmd_adapt.hh
   vmd_camera_action.hh
   vmd_mapping.hh
   vmd_morph_mapping.hh

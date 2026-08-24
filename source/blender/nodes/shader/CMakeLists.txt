@@ -80,6 +80,7 @@ set(SRC
   nodes/node_shader_rgb_to_bw.cc
   nodes/node_shader_script.cc
   nodes/node_shader_sepcomb_color.cc
+  nodes/node_shader_set_depth.cc
   nodes/node_shader_sepcomb_xyz.cc
   nodes/node_shader_shader_to_rgb.cc
   nodes/node_shader_squeeze.cc

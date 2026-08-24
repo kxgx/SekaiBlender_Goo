@@ -471,7 +471,8 @@ static bool ntree_weight_tree_tag_nodes(bNode *fromnode, bNode *tonode, void *us
                                        SH_NODE_MIX_SHADER,
                                        SH_NODE_OUTPUT_WORLD,
                                        SH_NODE_OUTPUT_MATERIAL,
-                                       SH_NODE_SHADERTORGB);
+                                       SH_NODE_SHADERTORGB,
+                                       SH_NODE_SET_DEPTH);
   if (tonode->runtime->tmp_flag == -1 && to_node_from_weight_tree) {
     tonode->runtime->tmp_flag = *node_count;
     *node_count += (tonode->type_legacy == SH_NODE_MIX_SHADER) ? 4 : 1;
@@ -530,6 +531,17 @@ static void ntree_shader_weight_tree_invert(bNodeTree *ntree, bNode *output_node
           nodes_copy[id]->runtime->tmp_flag = -2; /* Copy */
           ((bNodeSocketValueFloat *)ntree_shader_node_output_get(nodes_copy[id], 0)->default_value)
               ->value = 1.0f;
+          break;
+        }
+        case SH_NODE_SET_DEPTH: {
+          /* Start the tree with full weight. Set Depth 节点为 closure 直通，权重不变。
+           * 用 MATH_ADD 作镜像（与 ADD_SHADER 相同）：input1 接收权重、input0=0 直通，
+           * 输出与 input1 相等。VALUE 节点无输入 socket，无法接入权重链。 */
+          nodes_copy[id] = bke::node_add_static_node(nullptr, *ntree, SH_NODE_MATH);
+          nodes_copy[id]->custom1 = NODE_MATH_ADD;
+          nodes_copy[id]->runtime->tmp_flag = -2; /* Copy */
+          ((bNodeSocketValueFloat *)ntree_shader_node_input_get(nodes_copy[id], 0)->default_value)
+              ->value = 0.0f;
           break;
         }
         case SH_NODE_ADD_SHADER: {
@@ -624,7 +636,8 @@ static void ntree_shader_weight_tree_invert(bNodeTree *ntree, bNode *output_node
           case SH_NODE_OUTPUT_LIGHT:
           case SH_NODE_OUTPUT_WORLD:
           case SH_NODE_OUTPUT_MATERIAL:
-          case SH_NODE_ADD_SHADER: {
+          case SH_NODE_ADD_SHADER:
+          case SH_NODE_SET_DEPTH: {
             tonode = nodes_copy[node.runtime->tmp_flag];
             tosock = ntree_shader_node_output_get(tonode, 0);
             break;
@@ -653,6 +666,10 @@ static void ntree_shader_weight_tree_invert(bNodeTree *ntree, bNode *output_node
         }
 
         if (sock.link) {
+          /* Set Depth 的 View Depth 是普通数值输入，不属于闭包权重链，跳过。 */
+          if (node.type_legacy == SH_NODE_SET_DEPTH && socket_index == 1) {
+            continue;
+          }
           bNodeSocket *fromsock;
           bNode *fromnode = sock.link->fromnode;
 
@@ -671,6 +688,13 @@ static void ntree_shader_weight_tree_invert(bNodeTree *ntree, bNode *output_node
               if (fromsock->link) {
                 ntree_weight_tree_merge_weight(ntree, fromnode, fromsock, &tonode, &tosock);
               }
+              break;
+            }
+            case SH_NODE_SET_DEPTH: {
+              /* Closure 直通节点：权重经镜像 MATH_ADD 的 input1 继续传递
+               * （input0=0，输出=input1，与 ADD_SHADER 镜像同构）。 */
+              fromnode = nodes_copy[fromnode->runtime->tmp_flag];
+              fromsock = ntree_shader_node_input_get(fromnode, 1);
               break;
             }
             case SH_NODE_BACKGROUND:

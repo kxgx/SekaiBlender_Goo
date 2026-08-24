@@ -485,6 +485,36 @@ bool build_vmd_camera_action(Main *bmain,
   BKE_fcurve_handles_recalc(*ortho_scale_curve);
   BKE_fcurve_handles_recalc(*type_curve);
 
+  /* R3-VMD: mmd_tools detectCameraChange — keyframes closer than 1 frame
+   * apart become CONSTANT (hard cuts), avoiding 60fps smoothing artifacts. */
+  if (options.detect_camera_changes) {
+    auto apply_cut_detection = [](FCurve &curve) {
+      if (curve.bezt == nullptr || curve.totvert < 2) {
+        return;
+      }
+      /* Keyframes were inserted in ascending frame order, but sort to be
+       * robust against source files with unsorted camera keys. */
+      std::sort(curve.bezt, curve.bezt + curve.totvert, [](const BezTriple &a, const BezTriple &b) {
+        return a.vec[1][0] < b.vec[1][0];
+      });
+      for (int i = 0; i + 1 < curve.totvert; i++) {
+        if (curve.bezt[i + 1].vec[1][0] - curve.bezt[i].vec[1][0] <= 1.0f) {
+          curve.bezt[i].ipo = BEZT_IPO_CONST;
+        }
+      }
+    };
+    for (FCurve *curve : location_curves) {
+      apply_cut_detection(*curve);
+    }
+    for (FCurve *curve : rotation_curves) {
+      apply_cut_detection(*curve);
+    }
+    apply_cut_detection(*distance_curve);
+    apply_cut_detection(*lens_curve);
+    apply_cut_detection(*ortho_scale_curve);
+    apply_cut_detection(*type_curve);
+  }
+
   if (options.use_vmd_bezier_interpolation && !options.use_linear_interpolation) {
     apply_vmd_bezier_to_curve(*location_curves[0],
                               interpolation_data,

@@ -70,6 +70,7 @@ class TEXTURE_PT_preview(TextureButtonsPanel, Panel):
     COMPAT_ENGINES = {
         'BLENDER_RENDER',
         'BLENDER_EEVEE',
+        'BLENDER_GOOENGINE',
         'BLENDER_WORKBENCH',
     }
 
@@ -103,6 +104,7 @@ class TEXTURE_PT_context(TextureButtonsPanel, Panel):
     COMPAT_ENGINES = {
         'BLENDER_RENDER',
         'BLENDER_EEVEE',
+        'BLENDER_GOOENGINE',
         'BLENDER_WORKBENCH',
     }
 
@@ -146,6 +148,7 @@ class TEXTURE_PT_node(TextureButtonsPanel, Panel):
     COMPAT_ENGINES = {
         'BLENDER_RENDER',
         'BLENDER_EEVEE',
+        'BLENDER_GOOENGINE',
         'BLENDER_WORKBENCH',
     }
 
@@ -179,6 +182,7 @@ class TEXTURE_PT_clouds(TextureTypePanel, Panel):
     COMPAT_ENGINES = {
         'BLENDER_RENDER',
         'BLENDER_EEVEE',
+        'BLENDER_GOOENGINE',
         'BLENDER_WORKBENCH',
     }
 
@@ -215,6 +219,7 @@ class TEXTURE_PT_wood(TextureTypePanel, Panel):
     COMPAT_ENGINES = {
         'BLENDER_RENDER',
         'BLENDER_EEVEE',
+        'BLENDER_GOOENGINE',
         'BLENDER_WORKBENCH',
     }
 
@@ -256,6 +261,7 @@ class TEXTURE_PT_marble(TextureTypePanel, Panel):
     COMPAT_ENGINES = {
         'BLENDER_RENDER',
         'BLENDER_EEVEE',
+        'BLENDER_GOOENGINE',
         'BLENDER_WORKBENCH',
     }
 
@@ -294,6 +300,7 @@ class TEXTURE_PT_magic(TextureTypePanel, Panel):
     COMPAT_ENGINES = {
         'BLENDER_RENDER',
         'BLENDER_EEVEE',
+        'BLENDER_GOOENGINE',
         'BLENDER_WORKBENCH',
     }
 
@@ -317,6 +324,7 @@ class TEXTURE_PT_blend(TextureTypePanel, Panel):
     COMPAT_ENGINES = {
         'BLENDER_RENDER',
         'BLENDER_EEVEE',
+        'BLENDER_GOOENGINE',
         'BLENDER_WORKBENCH',
     }
 
@@ -343,6 +351,7 @@ class TEXTURE_PT_stucci(TextureTypePanel, Panel):
     COMPAT_ENGINES = {
         'BLENDER_RENDER',
         'BLENDER_EEVEE',
+        'BLENDER_GOOENGINE',
         'BLENDER_WORKBENCH',
     }
 
@@ -378,6 +387,7 @@ class TEXTURE_PT_image(TextureTypePanel, Panel):
     COMPAT_ENGINES = {
         'BLENDER_RENDER',
         'BLENDER_EEVEE',
+        'BLENDER_GOOENGINE',
         'BLENDER_WORKBENCH',
     }
 
@@ -394,6 +404,7 @@ class TEXTURE_PT_image_settings(TextureTypePanel, Panel):
     COMPAT_ENGINES = {
         'BLENDER_RENDER',
         'BLENDER_EEVEE',
+        'BLENDER_GOOENGINE',
         'BLENDER_WORKBENCH',
     }
 
@@ -412,6 +423,7 @@ class TEXTURE_PT_image_sampling(TextureTypePanel, Panel):
     COMPAT_ENGINES = {
         'BLENDER_RENDER',
         'BLENDER_EEVEE',
+        'BLENDER_GOOENGINE',
         'BLENDER_WORKBENCH',
     }
 
@@ -435,6 +447,7 @@ class TEXTURE_PT_image_alpha(TextureTypePanel, Panel):
     COMPAT_ENGINES = {
         'BLENDER_RENDER',
         'BLENDER_EEVEE',
+        'BLENDER_GOOENGINE',
         'BLENDER_WORKBENCH',
     }
 
@@ -462,6 +475,7 @@ class TEXTURE_PT_image_mapping(TextureTypePanel, Panel):
     COMPAT_ENGINES = {
         'BLENDER_RENDER',
         'BLENDER_EEVEE',
+        'BLENDER_GOOENGINE',
         'BLENDER_WORKBENCH',
     }
 
@@ -518,6 +532,7 @@ class TEXTURE_PT_image_mapping_crop(TextureTypePanel, Panel):
     COMPAT_ENGINES = {
         'BLENDER_RENDER',
         'BLENDER_EEVEE',
+        'BLENDER_GOOENGINE',
         'BLENDER_WORKBENCH',
     }
 
@@ -544,6 +559,7 @@ class TEXTURE_PT_musgrave(TextureTypePanel, Panel):
     COMPAT_ENGINES = {
         'BLENDER_RENDER',
         'BLENDER_EEVEE',
+        'BLENDER_GOOENGINE',
         'BLENDER_WORKBENCH',
     }
 
@@ -593,6 +609,7 @@ class TEXTURE_PT_voronoi(TextureTypePanel, Panel):
     COMPAT_ENGINES = {
         'BLENDER_RENDER',
         'BLENDER_EEVEE',
+        'BLENDER_GOOENGINE',
         'BLENDER_WORKBENCH',
     }
 
@@ -630,6 +647,7 @@ class TEXTURE_PT_voronoi_feature_weights(TextureTypePanel, Panel):
     COMPAT_ENGINES = {
         'BLENDER_RENDER',
         'BLENDER_EEVEE',
+        'BLENDER_GOOENGINE',
         'BLENDER_WORKBENCH',
     }
 
@@ -655,6 +673,7 @@ class TEXTURE_PT_distortednoise(TextureTypePanel, Panel):
     COMPAT_ENGINES = {
         'BLENDER_RENDER',
         'BLENDER_EEVEE',
+        'BLENDER_GOOENGINE',
         'BLENDER_WORKBENCH',
     }
 
@@ -684,6 +703,7 @@ class TextureSlotPanel(TextureButtonsPanel):
     COMPAT_ENGINES = {
         'BLENDER_RENDER',
         'BLENDER_EEVEE',
+        'BLENDER_GOOENGINE',
         'BLENDER_WORKBENCH',
     }
 
@@ -700,6 +720,7 @@ class TEXTURE_PT_mapping(TextureSlotPanel, Panel):
     COMPAT_ENGINES = {
         'BLENDER_RENDER',
         'BLENDER_EEVEE',
+        'BLENDER_GOOENGINE',
         'BLENDER_WORKBENCH',
     }
 
@@ -772,6 +793,7 @@ class TEXTURE_PT_influence(TextureSlotPanel, Panel):
     COMPAT_ENGINES = {
         'BLENDER_RENDER',
         'BLENDER_EEVEE',
+        'BLENDER_GOOENGINE',
         'BLENDER_WORKBENCH',
     }
 
@@ -858,6 +880,7 @@ class TEXTURE_PT_colors(TextureButtonsPanel, TextureColorsPoll, Panel):
     COMPAT_ENGINES = {
         'BLENDER_RENDER',
         'BLENDER_EEVEE',
+        'BLENDER_GOOENGINE',
         'BLENDER_WORKBENCH',
     }
 
@@ -891,6 +914,7 @@ class TEXTURE_PT_colors_ramp(TextureButtonsPanel, TextureColorsPoll, Panel):
     COMPAT_ENGINES = {
         'BLENDER_RENDER',
         'BLENDER_EEVEE',
+        'BLENDER_GOOENGINE',
         'BLENDER_WORKBENCH',
     }
 
@@ -954,6 +978,7 @@ class TEXTURE_PT_custom_props(TextureButtonsPanel, PropertyPanel, Panel):
     COMPAT_ENGINES = {
         'BLENDER_RENDER',
         'BLENDER_EEVEE',
+        'BLENDER_GOOENGINE',
         'BLENDER_WORKBENCH',
     }
     _context_path = "texture"

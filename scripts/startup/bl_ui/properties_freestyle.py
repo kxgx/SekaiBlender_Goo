@@ -28,6 +28,7 @@ class RENDER_PT_freestyle(RenderFreestyleButtonsPanel, Panel):
     COMPAT_ENGINES = {
         'BLENDER_RENDER',
         'BLENDER_EEVEE',
+        'BLENDER_GOOENGINE',
         'BLENDER_WORKBENCH',
     }
 
@@ -90,6 +91,7 @@ class ViewLayerFreestyleLineStyle(ViewLayerFreestyleEditorButtonsPanel):
     COMPAT_ENGINES = {
         'BLENDER_RENDER',
         'BLENDER_EEVEE',
+        'BLENDER_GOOENGINE',
         'BLENDER_WORKBENCH',
     }
 
@@ -134,6 +136,7 @@ class VIEWLAYER_PT_freestyle(ViewLayerFreestyleButtonsPanel, Panel):
     COMPAT_ENGINES = {
         'BLENDER_RENDER',
         'BLENDER_EEVEE',
+        'BLENDER_GOOENGINE',
         'BLENDER_WORKBENCH',
     }
 
@@ -168,6 +171,7 @@ class VIEWLAYER_PT_freestyle_edge_detection(ViewLayerFreestyleButtonsPanel, Pane
     COMPAT_ENGINES = {
         'BLENDER_RENDER',
         'BLENDER_EEVEE',
+        'BLENDER_GOOENGINE',
         'BLENDER_WORKBENCH',
     }
 
@@ -202,6 +206,7 @@ class VIEWLAYER_PT_freestyle_style_modules(ViewLayerFreestyleButtonsPanel, Panel
     COMPAT_ENGINES = {
         'BLENDER_RENDER',
         'BLENDER_EEVEE',
+        'BLENDER_GOOENGINE',
         'BLENDER_WORKBENCH',
     }
 
@@ -242,6 +247,7 @@ class VIEWLAYER_PT_freestyle_lineset(ViewLayerFreestyleEditorButtonsPanel, Panel
     COMPAT_ENGINES = {
         'BLENDER_RENDER',
         'BLENDER_EEVEE',
+        'BLENDER_GOOENGINE',
         'BLENDER_WORKBENCH',
     }
 
@@ -309,6 +315,7 @@ class VIEWLAYER_PT_freestyle_lineset_visibilty(ViewLayerFreestyleLineStyle, Pane
     COMPAT_ENGINES = {
         'BLENDER_RENDER',
         'BLENDER_EEVEE',
+        'BLENDER_GOOENGINE',
         'BLENDER_WORKBENCH',
     }
 
@@ -347,6 +354,7 @@ class VIEWLAYER_PT_freestyle_lineset_edgetype(ViewLayerFreestyleLineStyle, Panel
     COMPAT_ENGINES = {
         'BLENDER_RENDER',
         'BLENDER_EEVEE',
+        'BLENDER_GOOENGINE',
         'BLENDER_WORKBENCH',
     }
 
@@ -401,6 +409,7 @@ class VIEWLAYER_PT_freestyle_lineset_facemarks(ViewLayerFreestyleLineStyle, Pane
     COMPAT_ENGINES = {
         'BLENDER_RENDER',
         'BLENDER_EEVEE',
+        'BLENDER_GOOENGINE',
         'BLENDER_WORKBENCH',
     }
     bl_options = {'DEFAULT_CLOSED'}
@@ -434,6 +443,7 @@ class VIEWLAYER_PT_freestyle_lineset_collection(ViewLayerFreestyleLineStyle, Pan
     COMPAT_ENGINES = {
         'BLENDER_RENDER',
         'BLENDER_EEVEE',
+        'BLENDER_GOOENGINE',
         'BLENDER_WORKBENCH',
     }
     bl_options = {'DEFAULT_CLOSED'}
@@ -1255,6 +1265,7 @@ class VIEWLAYER_PT_freestyle_animation(ViewLayerFreestyleButtonsPanel, Propertie
     COMPAT_ENGINES = {
         'BLENDER_RENDER',
         'BLENDER_EEVEE',
+        'BLENDER_GOOENGINE',
         'BLENDER_WORKBENCH',
     }
 
@@ -1293,6 +1304,7 @@ class MATERIAL_PT_freestyle_line(MaterialFreestyleButtonsPanel, Panel):
     COMPAT_ENGINES = {
         'BLENDER_RENDER',
         'BLENDER_EEVEE',
+        'BLENDER_GOOENGINE',
         'BLENDER_WORKBENCH',
     }
 

@@ -24,6 +24,12 @@ struct VMDMappedBoneTrack {
   uint32_t first_frame = 0;
   uint32_t last_frame = 0;
   std::vector<size_t> keyframe_indices;
+  /* Empty when matched by exact name; otherwise records the adaptation path
+   * used ("alias", "normalized", "d_bone", "mirror") for the import report. */
+  std::string matched_via;
+  /* True when the motion mirror option flips this track across X: the keyframe
+   * values must be mirrored (translation X negated, rotation Y/Z negated). */
+  bool use_mirror = false;
 };
 
 struct VMDMissingBoneTrack {
@@ -54,6 +60,9 @@ struct VMDMappingReport {
   int vmd_track_count = 0;
   int mapped_track_count = 0;
   int missing_track_count = 0;
+  /* Number of tracks matched through name adaptation (alias, normalization,
+   * or D-bone fallback) instead of an exact name match. */
+  int adapted_track_count = 0;
   int mapped_keyframe_count = 0;
   int ignored_keyframe_count = 0;
   int duplicate_track_frame_count = 0;
@@ -73,6 +82,7 @@ struct VMDMappingReport {
  * It does not access or modify Blender data, create Actions, or create F-Curves.
  */
 VMDMappingReport map_bone_tracks(const VMDModel &model,
-                                 const std::vector<std::string> &target_bone_names);
+                                 const std::vector<std::string> &target_bone_names,
+                                 const bool mirror = false);
 
 }  // namespace blender::io::vmd

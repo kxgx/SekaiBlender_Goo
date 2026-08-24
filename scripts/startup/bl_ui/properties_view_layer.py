@@ -54,6 +54,7 @@ class VIEWLAYER_PT_context_layer(ViewLayerButtonsPanel, Panel):
     COMPAT_ENGINES = {
         'BLENDER_RENDER',
         'BLENDER_EEVEE',
+        'BLENDER_GOOENGINE',
         'BLENDER_WORKBENCH',
     }
 
@@ -80,6 +81,7 @@ class VIEWLAYER_PT_layer(ViewLayerButtonsPanel, Panel):
     COMPAT_ENGINES = {
         'BLENDER_RENDER',
         'BLENDER_EEVEE',
+        'BLENDER_GOOENGINE',
         'BLENDER_WORKBENCH',
     }
 
@@ -101,6 +103,7 @@ class VIEWLAYER_PT_layer_passes(ViewLayerButtonsPanel, Panel):
     bl_label = "Passes"
     COMPAT_ENGINES = {
         'BLENDER_EEVEE',
+        'BLENDER_GOOENGINE',
         'BLENDER_WORKBENCH',
     }
 
@@ -112,7 +115,7 @@ class VIEWLAYER_PT_eevee_layer_passes_data(ViewLayerButtonsPanel, Panel):
     bl_label = "Data"
     bl_parent_id = "VIEWLAYER_PT_layer_passes"
 
-    COMPAT_ENGINES = {'BLENDER_EEVEE'}
+    COMPAT_ENGINES = {'BLENDER_EEVEE', 'BLENDER_GOOENGINE'}
 
     def draw(self, context):
         layout = self.layout
@@ -172,7 +175,7 @@ class VIEWLAYER_PT_eevee_layer_passes_light(ViewLayerButtonsPanel, Panel):
     bl_label = "Light"
     bl_translation_context = i18n_contexts.render_layer
     bl_parent_id = "VIEWLAYER_PT_layer_passes"
-    COMPAT_ENGINES = {'BLENDER_EEVEE'}
+    COMPAT_ENGINES = {'BLENDER_EEVEE', 'BLENDER_GOOENGINE'}
 
     def draw(self, context):
         layout = self.layout
@@ -233,7 +236,7 @@ class ViewLayerAOVPanelHelper(ViewLayerButtonsPanel):
 
 class VIEWLAYER_PT_layer_passes_aov(ViewLayerAOVPanelHelper, Panel):
     bl_parent_id = "VIEWLAYER_PT_layer_passes"
-    COMPAT_ENGINES = {'BLENDER_EEVEE'}
+    COMPAT_ENGINES = {'BLENDER_EEVEE', 'BLENDER_GOOENGINE'}
 
 
 class ViewLayerCryptomattePanelHelper(ViewLayerButtonsPanel):
@@ -262,7 +265,7 @@ class ViewLayerCryptomattePanelHelper(ViewLayerButtonsPanel):
 
 class VIEWLAYER_PT_layer_passes_cryptomatte(ViewLayerCryptomattePanelHelper, Panel):
     bl_parent_id = "VIEWLAYER_PT_layer_passes"
-    COMPAT_ENGINES = {'BLENDER_EEVEE'}
+    COMPAT_ENGINES = {'BLENDER_EEVEE', 'BLENDER_GOOENGINE'}
 
 
 class VIEWLAYER_MT_lightgroup_sync(Menu):
@@ -309,7 +312,7 @@ class VIEWLAYER_PT_layer_passes_lightgroups(ViewLayerLightgroupsPanelHelper, Pan
 class VIEWLAYER_PT_filter(ViewLayerButtonsPanel, Panel):
     bl_label = "Filter"
     bl_options = {'DEFAULT_CLOSED'}
-    COMPAT_ENGINES = {'BLENDER_EEVEE'}
+    COMPAT_ENGINES = {'BLENDER_EEVEE', 'BLENDER_GOOENGINE'}
 
     def draw(self, context):
         layout = self.layout
@@ -337,6 +340,7 @@ class VIEWLAYER_PT_override(ViewLayerButtonsPanel, Panel):
     bl_options = {'DEFAULT_CLOSED'}
     COMPAT_ENGINES = {
         'BLENDER_EEVEE',
+        'BLENDER_GOOENGINE',
         'CYCLES',
     }
 

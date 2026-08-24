@@ -6,6 +6,7 @@
  * \ingroup io_vmd
  */
 
+#include "vmd_adapt.hh"
 #include "vmd_morph_mapping.hh"
 
 #include <limits>
@@ -139,8 +140,9 @@ VMDMissingMorphTrack make_missing_track(const TrackGroup &group,
 
 }  // namespace
 
-VMDMorphMappingReport map_morph_tracks(
-    const VMDModel &model, const std::vector<std::string> &target_morph_names)
+VMDMorphMappingReport map_morph_tracks(const VMDModel &model,
+                                       const std::vector<std::string> &target_morph_names,
+                                       const bool mirror)
 {
   VMDMorphMappingReport report;
   report.target_morph_count = int(target_morph_names.size());
@@ -150,6 +152,16 @@ VMDMorphMappingReport map_morph_tracks(
   const bool target_names_valid = validate_target_names(
       target_morph_names, report, target_indices);
   report.target_valid = target_names_valid;
+
+  /* Normalized name index for motion adaptation. */
+  std::unordered_map<std::string, int> target_normalized;
+  target_normalized.reserve(target_morph_names.size());
+  for (size_t index = 0; index < target_morph_names.size(); index++) {
+    if (target_morph_names[index].empty()) {
+      continue;
+    }
+    target_normalized.emplace(normalize_mmd_name(target_morph_names[index]), int(index));
+  }
 
   std::map<std::string, TrackGroup> groups;
   bool has_fatal_issue = false;
@@ -193,8 +205,27 @@ VMDMorphMappingReport map_morph_tracks(
 
   for (const auto &[name, group] : groups) {
     const std::vector<size_t> selected = select_unique_keyframes(group, model, report);
-    const auto target_it = target_indices.find(name);
-    if (target_it == target_indices.end()) {
+    VMDNameResolution resolution;
+    if (mirror) {
+      const std::string flipped = mirror_mmd_name(name);
+      if (flipped != name) {
+        resolution = resolve_morph_name(flipped, target_indices, target_normalized);
+        if (resolution.target_index >= 0) {
+          resolution.via = resolution.exact ? "mirror" : "mirror/" + resolution.via;
+          resolution.exact = false;
+        }
+      }
+      if (resolution.target_index < 0) {
+        resolution = resolve_morph_name(name, target_indices, target_normalized);
+        if (resolution.target_index >= 0 && !resolution.exact) {
+          resolution.via = "mirror/" + resolution.via;
+        }
+      }
+    }
+    else {
+      resolution = resolve_morph_name(name, target_indices, target_normalized);
+    }
+    if (resolution.target_index < 0) {
       report.missing_track_count++;
       report.missing_tracks.push_back(make_missing_track(group, model, selected));
       add_issue(report,
@@ -207,11 +238,21 @@ VMDMorphMappingReport map_morph_tracks(
 
     VMDMappedMorphTrack track;
     track.vmd_morph_name = name;
-    track.target_morph_name = target_morph_names[size_t(target_it->second)];
+    track.target_morph_name = target_morph_names[size_t(resolution.target_index)];
+    track.matched_via = resolution.via;
+    track.use_mirror = mirror;
     track.keyframe_indices = selected;
     fill_track_frame_range(track, model, selected);
     report.mapped_keyframe_count += int(selected.size());
     report.mapped_track_count++;
+    if (!resolution.exact) {
+      report.adapted_track_count++;
+      add_issue(report,
+                VMDMappingIssue::Severity::Info,
+                "morph_tracks[\"" + name + "\"]",
+                "adapted to target morph \"" + track.target_morph_name + "\" (via " +
+                    resolution.via + ")");
+    }
     report.mapped_tracks.push_back(std::move(track));
   }
 

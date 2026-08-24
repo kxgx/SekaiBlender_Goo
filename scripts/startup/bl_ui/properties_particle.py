@@ -64,6 +64,7 @@ class PARTICLE_MT_context_menu(Menu):
     COMPAT_ENGINES = {
         'BLENDER_RENDER',
         'BLENDER_EEVEE',
+        'BLENDER_GOOENGINE',
         'BLENDER_WORKBENCH',
     }
 
@@ -106,6 +107,7 @@ class PARTICLE_PT_hair_dynamics_presets(PresetPanel, Panel):
     COMPAT_ENGINES = {
         'BLENDER_RENDER',
         'BLENDER_EEVEE',
+        'BLENDER_GOOENGINE',
         'BLENDER_WORKBENCH',
     }
 
@@ -159,6 +161,7 @@ class PARTICLE_PT_context_particles(ParticleButtonsPanel, Panel):
     COMPAT_ENGINES = {
         'BLENDER_RENDER',
         'BLENDER_EEVEE',
+        'BLENDER_GOOENGINE',
         'BLENDER_WORKBENCH',
     }
 
@@ -259,6 +262,7 @@ class PARTICLE_PT_emission(ParticleButtonsPanel, Panel):
     COMPAT_ENGINES = {
         'BLENDER_RENDER',
         'BLENDER_EEVEE',
+        'BLENDER_GOOENGINE',
         'BLENDER_WORKBENCH',
     }
 
@@ -315,6 +319,7 @@ class PARTICLE_PT_emission_source(ParticleButtonsPanel, Panel):
     COMPAT_ENGINES = {
         'BLENDER_RENDER',
         'BLENDER_EEVEE',
+        'BLENDER_GOOENGINE',
         'BLENDER_WORKBENCH',
     }
 
@@ -356,6 +361,7 @@ class PARTICLE_PT_hair_dynamics(ParticleButtonsPanel, Panel):
     COMPAT_ENGINES = {
         'BLENDER_RENDER',
         'BLENDER_EEVEE',
+        'BLENDER_GOOENGINE',
         'BLENDER_WORKBENCH',
     }
 
@@ -449,6 +455,7 @@ class PARTICLE_PT_hair_dynamics_collision(ParticleButtonsPanel, Panel):
     COMPAT_ENGINES = {
         'BLENDER_RENDER',
         'BLENDER_EEVEE',
+        'BLENDER_GOOENGINE',
         'BLENDER_WORKBENCH',
     }
 
@@ -485,6 +492,7 @@ class PARTICLE_PT_hair_dynamics_structure(ParticleButtonsPanel, Panel):
     COMPAT_ENGINES = {
         'BLENDER_RENDER',
         'BLENDER_EEVEE',
+        'BLENDER_GOOENGINE',
         'BLENDER_WORKBENCH',
     }
 
@@ -520,6 +528,7 @@ class PARTICLE_PT_hair_dynamics_volume(ParticleButtonsPanel, Panel):
     COMPAT_ENGINES = {
         'BLENDER_RENDER',
         'BLENDER_EEVEE',
+        'BLENDER_GOOENGINE',
         'BLENDER_WORKBENCH',
     }
 
@@ -555,6 +564,7 @@ class PARTICLE_PT_cache(ParticleButtonsPanel, Panel):
     COMPAT_ENGINES = {
         'BLENDER_RENDER',
         'BLENDER_EEVEE',
+        'BLENDER_GOOENGINE',
         'BLENDER_WORKBENCH',
     }
 
@@ -592,6 +602,7 @@ class PARTICLE_PT_velocity(ParticleButtonsPanel, Panel):
     COMPAT_ENGINES = {
         'BLENDER_RENDER',
         'BLENDER_EEVEE',
+        'BLENDER_GOOENGINE',
         'BLENDER_WORKBENCH',
     }
 
@@ -645,6 +656,7 @@ class PARTICLE_PT_rotation(ParticleButtonsPanel, Panel):
     COMPAT_ENGINES = {
         'BLENDER_RENDER',
         'BLENDER_EEVEE',
+        'BLENDER_GOOENGINE',
         'BLENDER_WORKBENCH',
     }
 
@@ -704,6 +716,7 @@ class PARTICLE_PT_rotation_angular_velocity(ParticleButtonsPanel, Panel):
     COMPAT_ENGINES = {
         'BLENDER_RENDER',
         'BLENDER_EEVEE',
+        'BLENDER_GOOENGINE',
         'BLENDER_WORKBENCH',
     }
 
@@ -733,6 +746,7 @@ class PARTICLE_PT_physics(ParticleButtonsPanel, Panel):
     COMPAT_ENGINES = {
         'BLENDER_RENDER',
         'BLENDER_EEVEE',
+        'BLENDER_GOOENGINE',
         'BLENDER_WORKBENCH',
     }
 
@@ -790,6 +804,7 @@ class PARTICLE_PT_physics_fluid_advanced(ParticleButtonsPanel, Panel):
     COMPAT_ENGINES = {
         'BLENDER_RENDER',
         'BLENDER_EEVEE',
+        'BLENDER_GOOENGINE',
         'BLENDER_WORKBENCH',
     }
 
@@ -839,6 +854,7 @@ class PARTICLE_PT_physics_fluid_springs(ParticleButtonsPanel, Panel):
     COMPAT_ENGINES = {
         'BLENDER_RENDER',
         'BLENDER_EEVEE',
+        'BLENDER_GOOENGINE',
         'BLENDER_WORKBENCH',
     }
 
@@ -867,6 +883,7 @@ class PARTICLE_PT_physics_fluid_springs_viscoelastic(ParticleButtonsPanel, Panel
     COMPAT_ENGINES = {
         'BLENDER_RENDER',
         'BLENDER_EEVEE',
+        'BLENDER_GOOENGINE',
         'BLENDER_WORKBENCH',
     }
 
@@ -907,6 +924,7 @@ class PARTICLE_PT_physics_fluid_springs_advanced(ParticleButtonsPanel, Panel):
     COMPAT_ENGINES = {
         'BLENDER_RENDER',
         'BLENDER_EEVEE',
+        'BLENDER_GOOENGINE',
         'BLENDER_WORKBENCH',
     }
 
@@ -935,6 +953,7 @@ class PARTICLE_PT_physics_boids_movement(ParticleButtonsPanel, Panel):
     COMPAT_ENGINES = {
         'BLENDER_RENDER',
         'BLENDER_EEVEE',
+        'BLENDER_GOOENGINE',
         'BLENDER_WORKBENCH',
     }
 
@@ -992,6 +1011,7 @@ class PARTICLE_PT_physics_boids_battle(ParticleButtonsPanel, Panel):
     COMPAT_ENGINES = {
         'BLENDER_RENDER',
         'BLENDER_EEVEE',
+        'BLENDER_GOOENGINE',
         'BLENDER_WORKBENCH',
     }
 
@@ -1023,6 +1043,7 @@ class PARTICLE_PT_physics_boids_misc(ParticleButtonsPanel, Panel):
     COMPAT_ENGINES = {
         'BLENDER_RENDER',
         'BLENDER_EEVEE',
+        'BLENDER_GOOENGINE',
         'BLENDER_WORKBENCH',
     }
 
@@ -1052,6 +1073,7 @@ class PARTICLE_PT_physics_relations(ParticleButtonsPanel, Panel):
     COMPAT_ENGINES = {
         'BLENDER_RENDER',
         'BLENDER_EEVEE',
+        'BLENDER_GOOENGINE',
         'BLENDER_WORKBENCH',
     }
 
@@ -1113,6 +1135,7 @@ class PARTICLE_PT_physics_fluid_interaction(ParticleButtonsPanel, Panel):
     COMPAT_ENGINES = {
         'BLENDER_RENDER',
         'BLENDER_EEVEE',
+        'BLENDER_GOOENGINE',
         'BLENDER_WORKBENCH',
     }
 
@@ -1160,6 +1183,7 @@ class PARTICLE_PT_physics_deflection(ParticleButtonsPanel, Panel):
     COMPAT_ENGINES = {
         'BLENDER_RENDER',
         'BLENDER_EEVEE',
+        'BLENDER_GOOENGINE',
         'BLENDER_WORKBENCH',
     }
 
@@ -1190,6 +1214,7 @@ class PARTICLE_PT_physics_forces(ParticleButtonsPanel, Panel):
     COMPAT_ENGINES = {
         'BLENDER_RENDER',
         'BLENDER_EEVEE',
+        'BLENDER_GOOENGINE',
         'BLENDER_WORKBENCH',
     }
 
@@ -1221,6 +1246,7 @@ class PARTICLE_PT_physics_integration(ParticleButtonsPanel, Panel):
     COMPAT_ENGINES = {
         'BLENDER_RENDER',
         'BLENDER_EEVEE',
+        'BLENDER_GOOENGINE',
         'BLENDER_WORKBENCH',
     }
 
@@ -1259,6 +1285,7 @@ class PARTICLE_PT_boidbrain(ParticleButtonsPanel, Panel):
     COMPAT_ENGINES = {
         'BLENDER_RENDER',
         'BLENDER_EEVEE',
+        'BLENDER_GOOENGINE',
         'BLENDER_WORKBENCH',
     }
 
@@ -1365,6 +1392,7 @@ class PARTICLE_PT_render(ParticleButtonsPanel, Panel):
     COMPAT_ENGINES = {
         'BLENDER_RENDER',
         'BLENDER_EEVEE',
+        'BLENDER_GOOENGINE',
         'BLENDER_WORKBENCH',
     }
 
@@ -1418,6 +1446,7 @@ class PARTICLE_PT_render_extra(ParticleButtonsPanel, Panel):
     COMPAT_ENGINES = {
         'BLENDER_RENDER',
         'BLENDER_EEVEE',
+        'BLENDER_GOOENGINE',
         'BLENDER_WORKBENCH',
     }
 
@@ -1446,6 +1475,7 @@ class PARTICLE_PT_render_path(ParticleButtonsPanel, Panel):
     COMPAT_ENGINES = {
         'BLENDER_RENDER',
         'BLENDER_EEVEE',
+        'BLENDER_GOOENGINE',
         'BLENDER_WORKBENCH',
     }
 
@@ -1472,6 +1502,7 @@ class PARTICLE_PT_render_path_timing(ParticleButtonsPanel, Panel):
     COMPAT_ENGINES = {
         'BLENDER_RENDER',
         'BLENDER_EEVEE',
+        'BLENDER_GOOENGINE',
         'BLENDER_WORKBENCH',
     }
 
@@ -1504,6 +1535,7 @@ class PARTICLE_PT_render_object(ParticleButtonsPanel, Panel):
     COMPAT_ENGINES = {
         'BLENDER_RENDER',
         'BLENDER_EEVEE',
+        'BLENDER_GOOENGINE',
         'BLENDER_WORKBENCH',
     }
 
@@ -1533,6 +1565,7 @@ class PARTICLE_PT_render_collection(ParticleButtonsPanel, Panel):
     COMPAT_ENGINES = {
         'BLENDER_RENDER',
         'BLENDER_EEVEE',
+        'BLENDER_GOOENGINE',
         'BLENDER_WORKBENCH',
     }
 
@@ -1567,6 +1600,7 @@ class PARTICLE_PT_render_collection_use_count(ParticleButtonsPanel, Panel):
     COMPAT_ENGINES = {
         'BLENDER_RENDER',
         'BLENDER_EEVEE',
+        'BLENDER_GOOENGINE',
         'BLENDER_WORKBENCH',
     }
 
@@ -1621,6 +1655,7 @@ class PARTICLE_PT_draw(ParticleButtonsPanel, Panel):
     COMPAT_ENGINES = {
         'BLENDER_RENDER',
         'BLENDER_EEVEE',
+        'BLENDER_GOOENGINE',
         'BLENDER_WORKBENCH',
     }
 
@@ -1684,6 +1719,7 @@ class PARTICLE_PT_children(ParticleButtonsPanel, Panel):
     COMPAT_ENGINES = {
         'BLENDER_RENDER',
         'BLENDER_EEVEE',
+        'BLENDER_GOOENGINE',
         'BLENDER_WORKBENCH',
     }
 
@@ -1741,6 +1777,7 @@ class PARTICLE_PT_children_parting(ParticleButtonsPanel, Panel):
     COMPAT_ENGINES = {
         'BLENDER_RENDER',
         'BLENDER_EEVEE',
+        'BLENDER_GOOENGINE',
         'BLENDER_WORKBENCH',
     }
 
@@ -1776,6 +1813,7 @@ class PARTICLE_PT_children_clumping(ParticleButtonsPanel, Panel):
     COMPAT_ENGINES = {
         'BLENDER_RENDER',
         'BLENDER_EEVEE',
+        'BLENDER_GOOENGINE',
         'BLENDER_WORKBENCH',
     }
 
@@ -1816,6 +1854,7 @@ class PARTICLE_PT_children_clumping_noise(ParticleButtonsPanel, Panel):
     COMPAT_ENGINES = {
         'BLENDER_RENDER',
         'BLENDER_EEVEE',
+        'BLENDER_GOOENGINE',
         'BLENDER_WORKBENCH',
     }
 
@@ -1844,6 +1883,7 @@ class PARTICLE_PT_children_roughness(ParticleButtonsPanel, Panel):
     COMPAT_ENGINES = {
         'BLENDER_RENDER',
         'BLENDER_EEVEE',
+        'BLENDER_GOOENGINE',
         'BLENDER_WORKBENCH',
     }
 
@@ -1889,6 +1929,7 @@ class PARTICLE_PT_children_kink(ParticleButtonsPanel, Panel):
     COMPAT_ENGINES = {
         'BLENDER_RENDER',
         'BLENDER_EEVEE',
+        'BLENDER_GOOENGINE',
         'BLENDER_WORKBENCH',
     }
 
@@ -1943,6 +1984,7 @@ class PARTICLE_PT_field_weights(ParticleButtonsPanel, Panel):
     COMPAT_ENGINES = {
         'BLENDER_RENDER',
         'BLENDER_EEVEE',
+        'BLENDER_GOOENGINE',
         'BLENDER_WORKBENCH',
     }
 
@@ -1968,6 +2010,7 @@ class PARTICLE_PT_force_fields(ParticleButtonsPanel, Panel):
     COMPAT_ENGINES = {
         'BLENDER_RENDER',
         'BLENDER_EEVEE',
+        'BLENDER_GOOENGINE',
         'BLENDER_WORKBENCH',
     }
 
@@ -1988,6 +2031,7 @@ class PARTICLE_PT_force_fields_type1(ParticleButtonsPanel, Panel):
     COMPAT_ENGINES = {
         'BLENDER_RENDER',
         'BLENDER_EEVEE',
+        'BLENDER_GOOENGINE',
         'BLENDER_WORKBENCH',
     }
 
@@ -2009,6 +2053,7 @@ class PARTICLE_PT_force_fields_type2(ParticleButtonsPanel, Panel):
     COMPAT_ENGINES = {
         'BLENDER_RENDER',
         'BLENDER_EEVEE',
+        'BLENDER_GOOENGINE',
         'BLENDER_WORKBENCH',
     }
 
@@ -2031,6 +2076,7 @@ class PARTICLE_PT_force_fields_type1_falloff(ParticleButtonsPanel, Panel):
     COMPAT_ENGINES = {
         'BLENDER_RENDER',
         'BLENDER_EEVEE',
+        'BLENDER_GOOENGINE',
         'BLENDER_WORKBENCH',
     }
 
@@ -2051,6 +2097,7 @@ class PARTICLE_PT_force_fields_type2_falloff(ParticleButtonsPanel, Panel):
     COMPAT_ENGINES = {
         'BLENDER_RENDER',
         'BLENDER_EEVEE',
+        'BLENDER_GOOENGINE',
         'BLENDER_WORKBENCH',
     }
 
@@ -2070,6 +2117,7 @@ class PARTICLE_PT_vertexgroups(ParticleButtonsPanel, Panel):
     COMPAT_ENGINES = {
         'BLENDER_RENDER',
         'BLENDER_EEVEE',
+        'BLENDER_GOOENGINE',
         'BLENDER_WORKBENCH',
     }
 
@@ -2163,6 +2211,7 @@ class PARTICLE_PT_textures(ParticleButtonsPanel, Panel):
     COMPAT_ENGINES = {
         'BLENDER_RENDER',
         'BLENDER_EEVEE',
+        'BLENDER_GOOENGINE',
         'BLENDER_WORKBENCH',
     }
 
@@ -2199,6 +2248,7 @@ class PARTICLE_PT_hair_shape(ParticleButtonsPanel, Panel):
     COMPAT_ENGINES = {
         'BLENDER_RENDER',
         'BLENDER_EEVEE',
+        'BLENDER_GOOENGINE',
         'BLENDER_WORKBENCH',
     }
 
@@ -2231,6 +2281,7 @@ class PARTICLE_PT_animation(ParticleButtonsPanel, PropertiesAnimationMixin, Prop
     COMPAT_ENGINES = {
         'BLENDER_RENDER',
         'BLENDER_EEVEE',
+        'BLENDER_GOOENGINE',
         'BLENDER_WORKBENCH',
     }
 
@@ -2244,6 +2295,7 @@ class PARTICLE_PT_custom_props(ParticleButtonsPanel, PropertyPanel, Panel):
     COMPAT_ENGINES = {
         'BLENDER_RENDER',
         'BLENDER_EEVEE',
+        'BLENDER_GOOENGINE',
         'BLENDER_WORKBENCH',
     }
     _context_path = "particle_system.settings"

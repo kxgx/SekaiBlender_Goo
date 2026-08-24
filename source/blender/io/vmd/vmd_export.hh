@@ -32,7 +32,10 @@ struct VMDExportReport {
   std::vector<std::string> errors;
 };
 
-bool export_vmd_action(const Object &armature,
+/* `armature` may be nullptr for a morph-only export (mmd_tools semantics:
+ * exporting from the morph controller). At least one of `armature` and
+ * `options.morph_controller` must be present. */
+bool export_vmd_action(const Object *armature,
                        const std::string &filepath,
                        const VMDExportOptions &options,
                        ReportList *reports,

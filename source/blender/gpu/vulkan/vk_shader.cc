@@ -991,10 +991,29 @@ std::string VKShader::fragment_interface_declare(const shader::ShaderCreateInfo 
   if (info.early_fragment_test_) {
     ss << "layout(early_fragment_tests) in;\n";
   }
-  const bool use_gl_frag_depth = info.depth_write_ != DepthWrite::UNCHANGED &&
-                                 info.fragment_source_.find("gl_FragDepth") != std::string::npos;
+  /* Goo-engine 移植：gl_FragDepth 写在材质节点 GLSL（生成代码的依赖文件）里，
+   * 不在 fragment_source_（BSL surface）中——按文本与依赖文件名识别。 */
+  bool frag_depth_used = info.fragment_source_.find("gl_FragDepth") != std::string::npos;
+  if (!frag_depth_used) {
+    for (const GeneratedSource &gen : info.generated_sources) {
+      if (gen.content.find("gl_FragDepth") != std::string::npos) {
+        frag_depth_used = true;
+        break;
+      }
+      for (const StringRefNull &dep : gen.dependencies) {
+        if (StringRef(dep.c_str()).find("set_depth") != StringRef::not_found) {
+          frag_depth_used = true;
+          break;
+        }
+      }
+      if (frag_depth_used) {
+        break;
+      }
+    }
+  }
+  const bool use_gl_frag_depth = frag_depth_used;
   if (use_gl_frag_depth) {
-    ss << "layout(" << to_string(info.depth_write_) << ") out float gl_FragDepth;\n";
+    ss << "layout(depth_any) out float gl_FragDepth;\n";
   }
 
   /* Sub-pass Inputs. */

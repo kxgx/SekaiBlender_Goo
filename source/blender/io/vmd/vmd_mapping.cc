@@ -6,6 +6,7 @@
  * \ingroup io_vmd
  */
 
+#include "vmd_adapt.hh"
 #include "vmd_mapping.hh"
 
 #include <limits>
@@ -140,7 +141,8 @@ VMDMissingBoneTrack make_missing_track(const TrackGroup &group,
 }  // namespace
 
 VMDMappingReport map_bone_tracks(const VMDModel &model,
-                                 const std::vector<std::string> &target_bone_names)
+                                 const std::vector<std::string> &target_bone_names,
+                                 const bool mirror)
 {
   VMDMappingReport report;
   report.target_bone_count = int(target_bone_names.size());
@@ -154,6 +156,26 @@ VMDMappingReport map_bone_tracks(const VMDModel &model,
               VMDMappingIssue::Severity::Error,
               "target_bones",
               "target Armature has no bones");
+  }
+
+  /* Normalized name index for motion adaptation. Names that fold to the same
+   * normalized form keep the first occurrence (exact matching already
+   * preferred the exact name above). */
+  std::unordered_map<std::string, int> target_normalized;
+  target_normalized.reserve(target_bone_names.size());
+  for (size_t index = 0; index < target_bone_names.size(); index++) {
+    if (target_bone_names[index].empty()) {
+      continue;
+    }
+    const std::string normalized = normalize_mmd_name(target_bone_names[index]);
+    const auto [it, inserted] = target_normalized.emplace(normalized, int(index));
+    if (!inserted && target_names_valid) {
+      add_issue(report,
+                VMDMappingIssue::Severity::Info,
+                "target_bones",
+                "bone name \"" + target_bone_names[index] +
+                    "\" normalizes identically to another bone; exact names still match first");
+    }
   }
 
   std::map<std::string, TrackGroup> groups;
@@ -198,8 +220,29 @@ VMDMappingReport map_bone_tracks(const VMDModel &model,
 
   for (const auto &[name, group] : groups) {
     const std::vector<size_t> selected = select_unique_keyframes(group, model, report);
-    const auto target_it = target_indices.find(name);
-    if (target_it == target_indices.end() || !target_names_valid) {
+    VMDNameResolution resolution;
+    if (mirror) {
+      /* Mirror semantics (mmd_tools): the side-flipped target is preferred and
+       * all mapped values are X-mirrored. */
+      const std::string flipped = mirror_mmd_name(name);
+      if (flipped != name) {
+        resolution = resolve_bone_name(flipped, target_indices, target_normalized);
+        if (resolution.target_index >= 0) {
+          resolution.via = resolution.exact ? "mirror" : "mirror/" + resolution.via;
+          resolution.exact = false;
+        }
+      }
+      if (resolution.target_index < 0) {
+        resolution = resolve_bone_name(name, target_indices, target_normalized);
+        if (resolution.target_index >= 0 && !resolution.exact) {
+          resolution.via = "mirror/" + resolution.via;
+        }
+      }
+    }
+    else {
+      resolution = resolve_bone_name(name, target_indices, target_normalized);
+    }
+    if (resolution.target_index < 0 || !target_names_valid) {
       report.missing_track_count++;
       report.missing_tracks.push_back(make_missing_track(group, model, selected));
       /* Collect missing bone name for the summary report. */
@@ -208,22 +251,43 @@ VMDMappingReport map_bone_tracks(const VMDModel &model,
 
     VMDMappedBoneTrack track;
     track.vmd_bone_name = name;
-    track.armature_bone_name = name;
-    track.target_bone_index = target_it->second;
+    track.armature_bone_name = target_bone_names[size_t(resolution.target_index)];
+    track.target_bone_index = resolution.target_index;
+    track.matched_via = resolution.via;
+    track.use_mirror = mirror;
     track.keyframe_indices = selected;
     fill_track_frame_range(track, model, selected);
     report.mapped_keyframe_count += int(selected.size());
     report.mapped_track_count++;
+    if (!resolution.exact) {
+      report.adapted_track_count++;
+      add_issue(report,
+                VMDMappingIssue::Severity::Info,
+                "bone_tracks[\"" + name + "\"]",
+                "adapted to target bone \"" + track.armature_bone_name +
+                    "\" (via " + resolution.via + ")");
+    }
     report.mapped_tracks.push_back(std::move(track));
   }
 
-  /* Summary: report missing bone count as a single warning instead of per-bone. */
+  /* Summary: report missing bone count as a single warning instead of per-bone.
+   * Include a sample of the missing names so cross-model imports can be
+   * diagnosed (standard bones vs model-specific custom bones). */
   if (report.missing_track_count > 0) {
-    add_issue(report,
-              VMDMappingIssue::Severity::Warning,
-              "mapping",
-              std::to_string(report.missing_track_count) +
-                  " VMD bone track(s) not found in the target Armature");
+    std::string message = std::to_string(report.missing_track_count) +
+                          " VMD bone track(s) not found in the target Armature";
+    const int shown = int(std::min<size_t>(24, report.missing_tracks.size()));
+    if (shown > 0) {
+      message += " (e.g. ";
+      for (int i = 0; i < shown; i++) {
+        if (i > 0) {
+          message += ", ";
+        }
+        message += report.missing_tracks[i].vmd_bone_name;
+      }
+      message += ")";
+    }
+    add_issue(report, VMDMappingIssue::Severity::Warning, "mapping", std::move(message));
   }
 
   if (!target_names_valid || has_fatal_issue) {

@@ -267,3 +267,46 @@ TestOutput test_output(TestOutputRawData expect, TestOutputRawData result, bool 
   return test;
 }
 #endif
+
+/* -------------------------------------------------------------------- */
+/* GPU CCD IK 批量烘焙（R7-VMD）。与 mmd_ccd_ik_v8.cc 的 MMD Y-up      */
+/* row-major 数据同构。帧内链顺序求解，逐帧并行。                      */
+
+struct [[host_shared]] MmdBakeBoneConst {
+  packed_float3 base_pos_mmd;
+  float _pad0; /* std430：vec3 成员对齐 16，其后成员从偏移 16 开始 */
+  int parent_index;
+  int flags; /* 1=target 2=link 4=anchor */
+  float _pad1; /* 结构体对齐 16，数组步长补齐到 32B */
+  float _pad2;
+};
+
+struct [[host_shared]] MmdBakeChainConst {
+  int target_bone_index;
+  int effector_bone_index;
+  int link_offset;
+  int link_count;
+  int iterations;
+  float runtime_angle;
+};
+
+struct [[host_shared]] MmdBakeLinkConst {
+  int bone_index;
+  int has_limit;
+  float _pad0; /* float4 aligns to 16 */
+  float _pad1;
+  float4 limit_min_mmd; /* .xyz 有效，w 为填充（GLSL std430 vec3 对齐 16） */
+  float4 limit_max_mmd;
+};
+
+struct [[host_shared]] MmdBakeFrameBone {
+  float4 q_base_mmd; /* (w,x,y,z) */
+  float4 m0_row0;
+  float4 m0_row1;
+  float4 m0_row2;
+  float4 m0_row3;
+};
+
+struct [[host_shared]] MmdBakeFrameOut {
+  float4 q_current_mmd; /* (w,x,y,z) */
+};

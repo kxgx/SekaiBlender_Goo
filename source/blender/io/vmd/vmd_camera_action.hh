@@ -27,6 +27,9 @@ struct VMDCameraActionOptions {
   bool use_linear_interpolation = true;
   bool use_vmd_bezier_interpolation = false;
   float coordinate_scale = 0.08f;
+  /* R3-VMD (mmd_tools parity): when two consecutive camera keyframes are at
+   * most 1 frame apart, treat them as a hard cut (CONSTANT interpolation). */
+  bool detect_camera_changes = true;
 };
 
 struct VMDCameraActionReport {

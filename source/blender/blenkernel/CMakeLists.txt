@@ -6,6 +6,9 @@ set(INC
   PUBLIC .
   ../ikplugin
   ../mmd_ccd_ik
+  ../gpu/shaders
+  ../gpu/shaders/infos
+  ../gpu/intern
   ../makesrna
   ../modifiers
   ../nodes/geometry/include
@@ -47,6 +50,7 @@ set(SRC
   ../mmd_ccd_ik/mmd_ccd_ik.cc
   ../mmd_ccd_ik/mmd_ccd_ik_eval.cc
   ../mmd_ccd_ik/mmd_ccd_ik_v8.cc
+  ../mmd_ccd_ik/mmd_ccd_ik_bake.cc
   intern/asset.cc
   intern/asset_edit.cc
   intern/asset_weak_reference.cc

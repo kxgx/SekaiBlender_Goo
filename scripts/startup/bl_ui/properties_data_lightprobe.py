@@ -23,7 +23,8 @@ class DATA_PT_context_lightprobe(DataButtonsPanel, Panel):
     bl_options = {'HIDE_HEADER'}
     COMPAT_ENGINES = {
         'BLENDER_RENDER',
-        'BLENDER_EEVEE'
+        'BLENDER_EEVEE',
+        'BLENDER_GOOENGINE'
     }
 
     def draw(self, context):
@@ -88,7 +89,7 @@ class DATA_PT_lightprobe(DataButtonsPanel, Panel):
 
 class DATA_PT_lightprobe_eevee(DataButtonsPanel, Panel):
     bl_label = "Probe"
-    COMPAT_ENGINES = {'BLENDER_EEVEE'}
+    COMPAT_ENGINES = {'BLENDER_EEVEE', 'BLENDER_GOOENGINE'}
 
     def draw(self, context):
         layout = self.layout
@@ -164,7 +165,7 @@ class DATA_PT_lightprobe_visibility(DataButtonsPanel, Panel):
 
 class DATA_PT_lightprobe_capture(DataButtonsPanel, Panel):
     bl_label = "Capture"
-    COMPAT_ENGINES = {'BLENDER_EEVEE'}
+    COMPAT_ENGINES = {'BLENDER_EEVEE', 'BLENDER_GOOENGINE'}
 
     @classmethod
     def poll(cls, context):
@@ -189,7 +190,7 @@ class DATA_PT_lightprobe_capture(DataButtonsPanel, Panel):
 
 class DATA_PT_lightprobe_bake(DataButtonsPanel, Panel):
     bl_label = "Bake"
-    COMPAT_ENGINES = {'BLENDER_EEVEE'}
+    COMPAT_ENGINES = {'BLENDER_EEVEE', 'BLENDER_GOOENGINE'}
 
     @classmethod
     def poll(cls, context):
@@ -210,7 +211,7 @@ class DATA_PT_lightprobe_bake(DataButtonsPanel, Panel):
 class DATA_PT_lightprobe_bake_resolution(DataButtonsPanel, Panel):
     bl_label = "Resolution"
     bl_parent_id = "DATA_PT_lightprobe_bake"
-    COMPAT_ENGINES = {'BLENDER_EEVEE'}
+    COMPAT_ENGINES = {'BLENDER_EEVEE', 'BLENDER_GOOENGINE'}
 
     def draw(self, context):
         layout = self.layout
@@ -233,7 +234,7 @@ class DATA_PT_lightprobe_bake_resolution(DataButtonsPanel, Panel):
 class DATA_PT_lightprobe_bake_capture(DataButtonsPanel, Panel):
     bl_label = "Capture"
     bl_parent_id = "DATA_PT_lightprobe_bake"
-    COMPAT_ENGINES = {'BLENDER_EEVEE'}
+    COMPAT_ENGINES = {'BLENDER_EEVEE', 'BLENDER_GOOENGINE'}
 
     def draw(self, context):
         layout = self.layout
@@ -256,7 +257,7 @@ class DATA_PT_lightprobe_bake_offset(DataButtonsPanel, Panel):
     bl_label = "Offset"
     bl_parent_id = "DATA_PT_lightprobe_bake_capture"
     bl_options = {'DEFAULT_CLOSED'}
-    COMPAT_ENGINES = {'BLENDER_EEVEE'}
+    COMPAT_ENGINES = {'BLENDER_EEVEE', 'BLENDER_GOOENGINE'}
 
     def draw(self, context):
         layout = self.layout
@@ -274,7 +275,7 @@ class DATA_PT_lightprobe_bake_clamping(DataButtonsPanel, Panel):
     bl_label = "Clamping"
     bl_parent_id = "DATA_PT_lightprobe_bake_capture"
     bl_options = {'DEFAULT_CLOSED'}
-    COMPAT_ENGINES = {'BLENDER_EEVEE'}
+    COMPAT_ENGINES = {'BLENDER_EEVEE', 'BLENDER_GOOENGINE'}
 
     def draw(self, context):
         layout = self.layout
@@ -294,6 +295,7 @@ class DATA_PT_lightprobe_parallax(DataButtonsPanel, Panel):
     COMPAT_ENGINES = {
         'BLENDER_RENDER',
         'BLENDER_EEVEE',
+        'BLENDER_GOOENGINE',
     }
 
     @classmethod
@@ -354,7 +356,7 @@ class DATA_PT_lightprobe_display(DataButtonsPanel, Panel):
 class DATA_PT_lightprobe_display_eevee(DataButtonsPanel, Panel):
     bl_label = "Viewport Display"
     bl_options = {'DEFAULT_CLOSED'}
-    COMPAT_ENGINES = {'BLENDER_EEVEE'}
+    COMPAT_ENGINES = {'BLENDER_EEVEE', 'BLENDER_GOOENGINE'}
 
     def draw(self, context):
         layout = self.layout
@@ -387,7 +389,7 @@ class DATA_PT_lightprobe_display_eevee(DataButtonsPanel, Panel):
 
 
 class DATA_PT_lightprobe_animation(DataButtonsPanel, PropertiesAnimationMixin, Panel):
-    COMPAT_ENGINES = {'BLENDER_EEVEE'}
+    COMPAT_ENGINES = {'BLENDER_EEVEE', 'BLENDER_GOOENGINE'}
     _animated_id_context_property = "lightprobe"
 
 

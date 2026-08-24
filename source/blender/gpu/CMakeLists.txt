@@ -539,6 +539,7 @@ set(GLSL_SRC
   shaders/infos/gpu_shader_line_dashed_uniform_color_infos.hh
   shaders/infos/gpu_shader_print_infos.hh
   shaders/infos/gpu_shader_sequencer_infos.hh
+  shaders/infos/gpu_shader_mmd_ccd_infos.hh
   shaders/infos/gpu_shader_simple_lighting_infos.hh
   shaders/infos/gpu_shader_text_infos.hh
   shaders/infos/gpu_srgb_to_framebuffer_space_infos.hh
@@ -600,6 +601,7 @@ set(GLSL_SRC
   shaders/gpu_shader_keyframe_shape_frag.glsl
 
   shaders/gpu_shader_sequencer_scope_comp.glsl
+  shaders/gpu_shader_mmd_ccd_bake_comp.glsl
   shaders/gpu_shader_sequencer_scope_frag.glsl
   shaders/gpu_shader_sequencer_strips_vert.glsl
   shaders/gpu_shader_sequencer_strips_frag.glsl
@@ -742,6 +744,7 @@ set(GLSL_SRC
   shaders/material/gpu_shader_material_separate_transform.glsl
   shaders/material/gpu_shader_material_separate_xyz.glsl
   shaders/material/gpu_shader_material_set.glsl
+  shaders/material/gpu_shader_material_set_depth.glsl
   shaders/material/gpu_shader_material_shader_to_rgba.glsl
   shaders/material/gpu_shader_material_sheen.glsl
   shaders/material/gpu_shader_material_squeeze.glsl

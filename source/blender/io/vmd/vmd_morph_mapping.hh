@@ -33,6 +33,12 @@ struct VMDMappedMorphTrack {
   uint32_t first_frame = 0;
   uint32_t last_frame = 0;
   std::vector<size_t> keyframe_indices;
+  /* Empty when matched by exact name; otherwise records the adaptation path
+   * used ("alias", "normalized", "mirror") for the import report. */
+  std::string matched_via;
+  /* True when the motion mirror option flips this morph track across X
+   * (name resolution prefers the side-flipped target). */
+  bool use_mirror = false;
 };
 
 struct VMDMissingMorphTrack {
@@ -50,6 +56,9 @@ struct VMDMorphMappingReport {
   int vmd_track_count = 0;
   int mapped_track_count = 0;
   int missing_track_count = 0;
+  /* Number of tracks matched through name adaptation (alias or normalization)
+   * instead of an exact name match. */
+  int adapted_track_count = 0;
   int mapped_keyframe_count = 0;
   int ignored_keyframe_count = 0;
   int duplicate_track_frame_count = 0;
@@ -69,6 +78,7 @@ struct VMDMorphMappingReport {
  * It does not access or modify Blender data, create Actions, or create F-Curves.
  */
 VMDMorphMappingReport map_morph_tracks(const VMDModel &model,
-                                       const std::vector<std::string> &target_morph_names);
+                                       const std::vector<std::string> &target_morph_names,
+                                       const bool mirror = false);
 
 }  // namespace blender::io::vmd

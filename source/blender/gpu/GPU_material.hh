@@ -103,6 +103,8 @@ enum eGPUMaterialFlag {
 
   /* Tells the render engine the material was just compiled or updated. */
   GPU_MATFLAG_UPDATED = (1 << 29),
+  /* Goo-engine compat: material writes pixel depth (Set Depth node). */
+  GPU_MATFLAG_SET_DEPTH = (1 << 30),
 };
 ENUM_OPERATORS(eGPUMaterialFlag);
 

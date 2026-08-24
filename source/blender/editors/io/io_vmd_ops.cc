@@ -9,6 +9,7 @@
 #include "io_vmd_ops.hh"
 
 #include "BKE_anim_data.hh"
+#include "BKE_nla.hh"
 #include "BKE_armature.hh"
 #include "BKE_context.hh"
 #include "BKE_file_handler.hh"
@@ -320,7 +321,23 @@ static int vmd_suspend_mmd_approx_constraints(Main *bmain, Object *ob)
   if (has_ik_def && ob->adt && ob->adt->action) {
     has_vmd_ik_toggle = action_has_ik_toggle_fcurves(*ob->adt->action, *ob->adt);
   }
-
+    /* R6-VMD 兜底：apply_vmd_ik_toggle 总会在 IK 控制骨上写静态 mmd_ik_toggle
+   * 属性（首帧状态回退）。通道包探测失败时用它作为信号。 */
+  if (!has_vmd_ik_toggle && has_ik_def && ob->data != nullptr) {
+    bArmature *arm = id_cast<bArmature *>(ob->data);
+    if (arm != nullptr) {
+      for (const io::pmx::PMXBoneIKDefinition &def : ik_def.ik_bones) {
+        Bone *ik_bone = BKE_armature_find_bone_name(arm, def.bone_name.c_str());
+        if (ik_bone != nullptr && ik_bone->system_properties != nullptr &&
+            IDP_GetPropertyFromGroup_null(ik_bone->system_properties, "mmd_ik_toggle") != nullptr)
+        {
+          has_vmd_ik_toggle = true;
+          break;
+        }
+      }
+    }
+  }
+  
   /* Set of link-bone names belonging to IK chains that LACK full FK rotation
    * coverage. For multi-link chains (e.g. leg IK: [knee, thigh]) ALL links
    * must have FK rotation to qualify as pure-FK; a single missing link forces
@@ -351,20 +368,18 @@ static int vmd_suspend_mmd_approx_constraints(Main *bmain, Object *ob)
 
   /* Toggle native CCD IK per IK control bone.
    *
-   * When the VMD ships an IK toggle track, keep native IK enabled on every IK
-   * control bone — the E-phase CCD solver will read the per-frame toggle value
-   * from the `mmd_ik_toggle` F-Curve and skip solving when the VMD says IK off.
-   * This mirrors mmd_tools, which lets the VMD property track drive IK on/off
-   * per frame.
+   * R6-VMD（mmd_tools 对齐）：VMD 携带 IK 开关轨道时，完全禁用原生 CCD V8，
+   * 由保持激活的 MMD_IK_Approx 约束（influence 逐帧 F-Curve 驱动）完成
+   * IK/FK 切换——与 mmd_tools 的机制同构。此前原生求解器与 iTaSC 约束
+   * 同时求解同一条腿链、互相覆盖，导致腿部扭曲。
    *
-   * Otherwise (pure-FK VMD with no property track) use the mixed-chain
-   * heuristic: disable native IK on pure-FK chains so CCD leaves them alone,
-   * keep it on mixed-type chains so CCD can bend them. */
+   * 无开关轨道（纯 FK VMD）时保留混合链启发式：纯 FK 链禁用原生 IK，
+   * 缺 FK 覆盖的混合链保留 CCD 弯曲能力。 */
   if (has_ik_def) {
     bArmature *arm = id_cast<bArmature *>(ob->data);
     if (arm) {
       for (const io::pmx::PMXBoneIKDefinition &def : ik_def.ik_bones) {
-        const bool is_mixed = has_vmd_ik_toggle ||
+        const bool is_mixed = (!has_vmd_ik_toggle) &&
                               mixed_ik_bone_names.count(def.bone_name) > 0;
         Bone *ik_bone = BKE_armature_find_bone_name(arm, def.bone_name.c_str());
         if (ik_bone) {
@@ -640,6 +655,12 @@ wmOperatorStatus wm_vmd_import_exec(bContext *C, wmOperator *op)
   io::vmd::VMDImportOptions options;
   options.frame_offset = RNA_int_get(op->ptr, "frame_offset");
   options.replace_existing_action = RNA_boolean_get(op->ptr, "replace_existing_action");
+  options.coordinate_scale = RNA_float_get(op->ptr, "coordinate_scale");
+  options.use_mirror = RNA_boolean_get(op->ptr, "use_mirror");
+  options.use_pose_mode = RNA_boolean_get(op->ptr, "use_pose_mode");
+  options.include_ik = RNA_boolean_get(op->ptr, "include_ik");
+  options.update_scene_settings = RNA_boolean_get(op->ptr, "update_scene_settings");
+  options.use_nla = RNA_boolean_get(op->ptr, "use_nla");
   options.use_vmd_bezier_interpolation = RNA_boolean_get(op->ptr, "use_vmd_bezier_interpolation");
   if (options.use_vmd_bezier_interpolation) {
     /* C3: VMD-native bezier interpolation implies non-linear bone tracks. */
@@ -674,6 +695,44 @@ wmOperatorStatus wm_vmd_import_exec(bContext *C, wmOperator *op)
                 "Re-enable via the constraint panel or Apply operators for "
                 "manual posing.",
                 suspended);
+  }
+
+  /* R3-VMD (mmd_tools Use NLA): move the freshly imported Actions onto NLA
+   * tracks so the Armature keeps a free active Action slot. */
+  if (options.use_nla) {
+    const auto move_to_nla = [&](ID &animated_id, const int first_frame, const int last_frame) {
+      AnimData *adt = BKE_animdata_from_id(&animated_id);
+      if (adt == nullptr || adt->action == nullptr) {
+        return;
+      }
+      bAction *action = adt->action;
+      NlaTrack *track = BKE_nlatrack_new_tail(&adt->nla_tracks, false);
+      if (track == nullptr) {
+        return;
+      }
+      STRNCPY_UTF8(track->name, action->id.name + 2);
+      NlaStrip *strip = BKE_nlastrip_new(action, animated_id);
+      if (strip == nullptr) {
+        return;
+      }
+      strip->start = float(first_frame >= 0 ? first_frame : 1);
+      strip->end = float(last_frame >= first_frame ? last_frame + 1 : strip->start + 1.0f);
+      BKE_nlatrack_add_strip(track, strip, false);
+      BKE_animdata_set_action(nullptr, &animated_id, nullptr);
+      BKE_reportf(op->reports,
+                  RPT_INFO,
+                  "Moved VMD Action to NLA track '%s'",
+                  track->name);
+    };
+    move_to_nla(target->id, result.action.first_frame, result.action.last_frame);
+    if (import_morphs) {
+      Mesh *controller_mesh = id_cast<Mesh *>(morph_controller->data);
+      if (controller_mesh != nullptr && controller_mesh->key != nullptr) {
+        move_to_nla(controller_mesh->key->id,
+                    result.morph_action.first_frame,
+                    result.morph_action.last_frame);
+      }
+    }
   }
 
   if (AnimData *anim_data = BKE_animdata_from_id(&target->id)) {
@@ -712,7 +771,7 @@ wmOperatorStatus wm_vmd_import_exec(bContext *C, wmOperator *op)
 
   Scene *scene = CTX_data_scene(C);
   /* Update scene frame range to match the imported VMD data. */
-  {
+  if (options.update_scene_settings) {
     int vmd_start = result.action.first_frame;
     int vmd_end = result.action.last_frame;
     if (!result.morph_action.skipped) {
@@ -738,6 +797,15 @@ wmOperatorStatus wm_vmd_import_exec(bContext *C, wmOperator *op)
                   vmd_start,
                   vmd_end);
     }
+  }
+  /* MMD motions are authored at 30 FPS and VMD carries no FPS field. Keeping
+   * the scene at another frame rate would play the motion at the wrong speed,
+   * so switch the scene to the MMD standard rate and report the change. */
+  if (options.update_scene_settings && scene->r.frs_sec != 30.0f) {
+    scene->r.frs_sec = 30.0f;
+    BKE_report(op->reports,
+               RPT_INFO,
+               "Scene FPS set to 30 (MMD standard; VMD has no FPS field)");
   }
   WM_event_add_notifier(C, NC_ANIMATION | ND_NLA_ACTCHANGE, nullptr);
   WM_event_add_notifier(C, NC_ANIMATION | ND_ANIMCHAN | NA_EDITED, nullptr);
@@ -770,6 +838,7 @@ wmOperatorStatus wm_vmd_camera_import_exec(bContext *C, wmOperator *op)
   options.use_vmd_bezier_interpolation = RNA_boolean_get(op->ptr,
                                                          "use_vmd_bezier_interpolation");
   options.use_linear_interpolation = !options.use_vmd_bezier_interpolation;
+  options.detect_camera_changes = RNA_boolean_get(op->ptr, "detect_camera_changes");
 
   Object *target_camera = nullptr;
   Object *active_object = CTX_data_active_object(C);
@@ -844,12 +913,26 @@ void wm_vmd_import_draw(bContext * /*C*/, wmOperator *op)
   layout.use_property_split_set(true);
   layout.use_property_decorate_set(false);
   layout.prop(op->ptr, "target", UI_ITEM_NONE, "Target Armature", ICON_NONE);
+  layout.prop(op->ptr, "coordinate_scale", UI_ITEM_NONE, "Coordinate Scale", ICON_NONE);
   layout.prop(op->ptr, "frame_offset", UI_ITEM_NONE, "Frame Offset", ICON_NONE);
   layout.prop(op->ptr,
               "replace_existing_action",
               UI_ITEM_NONE,
               "Replace Existing Action",
               ICON_NONE);
+  layout.prop(op->ptr, "use_mirror", UI_ITEM_NONE, "Mirror Motion", ICON_NONE);
+  layout.prop(op->ptr,
+              "use_pose_mode",
+              UI_ITEM_NONE,
+              "Treat Current Pose as Rest Pose",
+              ICON_NONE);
+  layout.prop(op->ptr, "include_ik", UI_ITEM_NONE, "Include IK", ICON_NONE);
+  layout.prop(op->ptr,
+              "update_scene_settings",
+              UI_ITEM_NONE,
+              "Update Scene Settings",
+              ICON_NONE);
+  layout.prop(op->ptr, "use_nla", UI_ITEM_NONE, "Use NLA", ICON_NONE);
   layout.prop(op->ptr, "import_morphs", UI_ITEM_NONE, "Import Morphs", ICON_NONE);
   layout.prop(op->ptr,
               "use_vmd_bezier_interpolation",
@@ -875,6 +958,11 @@ void wm_vmd_camera_import_draw(bContext * /*C*/, wmOperator *op)
               UI_ITEM_NONE,
               "VMD Native Bezier",
               ICON_NONE);
+  layout.prop(op->ptr,
+              "detect_camera_changes",
+              UI_ITEM_NONE,
+              "Detect Camera Cut",
+              ICON_NONE);
 }
 
 wmOperatorStatus wm_vmd_export_invoke(bContext *C, wmOperator *op, const wmEvent * /*event*/)
@@ -893,11 +981,53 @@ wmOperatorStatus wm_vmd_export_invoke(bContext *C, wmOperator *op, const wmEvent
 
 wmOperatorStatus wm_vmd_export_exec(bContext *C, wmOperator *op)
 {
-  Object *armature = CTX_data_active_object(C);
-  if (armature == nullptr || armature->type != OB_ARMATURE) {
-    BKE_report(op->reports, RPT_ERROR, "VMD export requires the active object to be an Armature");
-    return OPERATOR_CANCELLED;
+  /* mmd_tools 风格目标解析：骨架自身、骨架的子孙（网格）、模型根、骨架的兄弟
+   * （morph 控制器）都能作为活动对象导出，最后回退到场景里的第一个骨架。 */
+  Main *bmain = CTX_data_main(C);
+  Object *active = CTX_data_active_object(C);
+  Object *armature = nullptr;
+  for (Object *walk = active; walk != nullptr; walk = walk->parent) {
+    if (walk->type == OB_ARMATURE) {
+      armature = walk;
+      break;
+    }
   }
+  if (armature == nullptr) {
+    /* 活动对象不是骨架后代：从其根节点下找骨架兄弟（模型根导出场景）。 */
+    Object *root = active;
+    while (root != nullptr && root->parent != nullptr) {
+      root = root->parent;
+    }
+    for (Object *ob = static_cast<Object *>(bmain->objects.first); ob != nullptr;
+         ob = static_cast<Object *>(ob->id.next))
+    {
+      if (ob->type != OB_ARMATURE) {
+        continue;
+      }
+      if (root != nullptr && (ob->parent == root || ob->parent == active)) {
+        armature = ob;
+        break;
+      }
+    }
+  }
+  if (armature == nullptr) {
+    /* 场景回退：第一个骨架（与导入端一致）。 */
+    for (Object *ob = static_cast<Object *>(bmain->objects.first); ob != nullptr;
+         ob = static_cast<Object *>(ob->id.next))
+    {
+      if (ob->type == OB_ARMATURE) {
+        armature = ob;
+        break;
+      }
+    }
+  }
+  if (armature != nullptr) {
+    BKE_reportf(op->reports,
+                RPT_INFO,
+                "VMD export using Armature '%s'",
+                armature->id.name + 2);
+  }
+
   char filepath[FILE_MAX];
   RNA_string_get(op->ptr, "filepath", filepath);
   io::vmd::VMDExportOptions options;
@@ -908,10 +1038,26 @@ wmOperatorStatus wm_vmd_export_exec(bContext *C, wmOperator *op)
   RNA_string_get(op->ptr, "model_name", model_name);
   options.model_name = model_name;
   if (RNA_boolean_get(op->ptr, "export_morphs")) {
-    options.morph_controller = vmd_find_morph_controller(CTX_data_main(C), armature);
+    if (armature != nullptr) {
+      options.morph_controller = vmd_find_morph_controller(bmain, armature);
+    }
+    /* 活动对象本身是带 Shape Keys 的网格（morph 控制器）时直接采用。 */
+    if (options.morph_controller == nullptr && active != nullptr && active->type == OB_MESH) {
+      const Mesh *mesh = id_cast<Mesh *>(active->data);
+      if (mesh != nullptr && mesh->key != nullptr) {
+        options.morph_controller = active;
+      }
+    }
+  }
+  if (armature == nullptr && options.morph_controller == nullptr) {
+    BKE_report(op->reports,
+               RPT_ERROR,
+               "VMD export requires an Armature, the model root, or a Morph controller "
+               "as the active object");
+    return OPERATOR_CANCELLED;
   }
   io::vmd::VMDExportReport report;
-  if (!io::vmd::export_vmd_action(*armature, filepath, options, op->reports, report)) {
+  if (!io::vmd::export_vmd_action(armature, filepath, options, op->reports, report)) {
     return OPERATOR_CANCELLED;
   }
   BKE_reportf(op->reports,
@@ -1060,11 +1206,49 @@ void WM_OT_vmd_import(wmOperatorType *ot)
               "Add this value to every imported VMD frame",
               -1000,
               1000);
+  RNA_def_float(ot->srna,
+                "coordinate_scale",
+                0.08f,
+                0.000001f,
+                1000.0f,
+                "Coordinate Scale",
+                "Blender units per MMD coordinate unit (mmd_tools: Scale)",
+                0.001f,
+                1.0f);
   RNA_def_boolean(ot->srna,
                   "replace_existing_action",
                   true,
                   "Replace Existing Action",
-                  "Replace the active Armature's existing Action");
+                  "Replace the Armature's existing Action; when disabled, new keyframes "
+                  "are written into the existing Action (UPDATE mode)");
+  RNA_def_boolean(ot->srna,
+                  "use_mirror",
+                  false,
+                  "Mirror Motion",
+                  "Mirror the whole motion across the X axis (side-flipped bone targets "
+                  "and mirrored values)");
+  RNA_def_boolean(ot->srna,
+                  "use_pose_mode",
+                  false,
+                  "Treat Current Pose as Rest Pose",
+                  "Use the model's current pose as the motion base instead of the rest "
+                  "pose (for T-Pose / A-Pose mismatches)");
+  RNA_def_boolean(ot->srna,
+                  "include_ik",
+                  true,
+                  "Include IK",
+                  "Import VMD IK toggle tracks that drive the native CCD solver per frame");
+  RNA_def_boolean(ot->srna,
+                  "update_scene_settings",
+                  true,
+                  "Update Scene Settings",
+                  "Set the scene frame rate to 30 FPS and the frame range to the VMD range");
+  RNA_def_boolean(ot->srna,
+                  "use_nla",
+                  false,
+                  "Use NLA",
+                  "Import the motion as NLA strips instead of replacing the Armature's "
+                  "active Action");
   RNA_def_boolean(ot->srna,
                   "import_morphs",
                   true,
@@ -1124,6 +1308,12 @@ void WM_OT_vmd_camera_import(wmOperatorType *ot)
                   true,
                   "Replace Existing Action",
                   "Replace actions on the imported camera rig when applicable");
+  RNA_def_boolean(ot->srna,
+                  "detect_camera_changes",
+                  true,
+                  "Detect Camera Cut",
+                  "When consecutive camera keyframes are at most 1 frame apart, use "
+                  "CONSTANT interpolation (hard cut) instead of smoothing");
   RNA_def_boolean(ot->srna,
                   "use_vmd_bezier_interpolation",
                   true,

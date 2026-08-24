@@ -25,6 +25,7 @@
 #include "BLI_string.hh"
 
 #include "BLI_math_matrix_c.hh"
+#include "BLI_math_vector_c.hh"
 #include "BLI_math_rotation_c.hh"
 
 #include <algorithm>
@@ -189,12 +190,44 @@ BoneConverter::BoneConverter()
   unit_qt(q_conv);
 }
 
-void BoneConverter::compute_from_pose_bone(const bPoseChannel &pchan, const Object &ob)
+void BoneConverter::compute_from_pose_bone(const bPoseChannel &pchan,
+                                           const Object &ob,
+                                           const bool use_pose_mode)
 {
   const Bone *bone = pchan.bone_get(ob);
   if (bone == nullptr) {
     unit_m3(mat);
     unit_qt(q_conv);
+    return;
+  }
+
+  if (use_pose_mode) {
+    /* R2-VMD: BoneConverterPoseMode port (mmd_tools). The conversion uses the
+     * bone's CURRENT pose matrix as the basis and adds the current pose
+     * location as an offset, so motions authored against a different base
+     * pose (T-Pose vs A-Pose) land correctly. */
+    pose_mode = true;
+    float pose_rot[3][3];
+    copy_m3_m4(pose_rot, pchan.pose_mat);
+    normalize_m3(pose_rot);
+    for (int i = 0; i < 3; i++) {
+      std::swap(pose_rot[i][1], pose_rot[i][2]);
+    }
+    transpose_m3_m3(mat, pose_rot);
+
+    /* Basis rotation from the pose channel's local loc/rot/scale. */
+    float basis_rot[3][3];
+    {
+      float basis_mat[4][4];
+      loc_quat_size_to_mat4(basis_mat, pchan.loc, pchan.quat, pchan.scale);
+      copy_m3_m4(basis_rot, basis_mat);
+      normalize_m3(basis_rot);
+    }
+    mul_m3_m3m3(mat_loc, basis_rot, mat);
+    copy_v3_v3(offset, pchan.loc);
+
+    mat3_to_quat(q_conv, mat);
+    normalize_qt(q_conv);
     return;
   }
 
@@ -260,6 +293,15 @@ void BoneConverter::convert_location(const float vmd_loc[3],
                                      float bl_loc[3],
                                      const float scale) const
 {
+  if (pose_mode) {
+    /* mmd_tools _convert_location: offset + (mat_loc @ loc) * scale. */
+    float rotated[3];
+    mul_v3_m3v3(rotated, mat_loc, vmd_loc);
+    for (int i = 0; i < 3; i++) {
+      bl_loc[i] = offset[i] + rotated[i] * scale;
+    }
+    return;
+  }
   for (int i = 0; i < 3; i++) {
     bl_loc[i] = (mat[i][0] * vmd_loc[0] + mat[i][1] * vmd_loc[1] +
                  mat[i][2] * vmd_loc[2]) *
@@ -272,6 +314,26 @@ void BoneConverter::convert_rotation(const float vmd_rot[4], float bl_rot[4]) co
   /* VMD raw order is (qx, qy, qz, qw). Reorder to Blender (qw, qx, qy, qz). */
   float src_q[4] = {vmd_rot[3], vmd_rot[0], vmd_rot[1], vmd_rot[2]};
   normalize_qt(src_q);
+
+  if (pose_mode) {
+    /* mmd_tools _convert_rotation (pose mode):
+     * rot = quat(mat @ axis * -1, angle); result = (mat_rot @ rot.to_matrix()).to_quat() */
+    float axis[3];
+    float angle;
+    quat_to_axis_angle(axis, &angle, src_q);
+    float flipped_axis[3];
+    mul_v3_m3v3(flipped_axis, mat, axis);
+    negate_v3(flipped_axis);
+    float rot_q[4];
+    axis_angle_to_quat(rot_q, flipped_axis, angle);
+    float rot_m[3][3];
+    quat_to_mat3(rot_m, rot_q);
+    float out_m[3][3];
+    mul_m3_m3m3(out_m, mat_loc, rot_m);
+    mat3_to_quat(bl_rot, out_m);
+    normalize_qt(bl_rot);
+    return;
+  }
 
   /* Conjugation: bl_rot = q_conv * src_q * conj(q_conv).
    * This rotates the quaternion's reference frame from MMD Y-up world
@@ -349,14 +411,14 @@ bool build_vmd_action(Main *bmain,
     add_error(r_result, reports, "VMD coordinate scale must be finite and greater than zero");
     return false;
   }
+  /* R2-VMD: replace_existing_action=false switches to UPDATE mode — new
+   * keyframes are written into the Armature's existing Action (same-frame
+   * keys replace), instead of refusing when an Action is already bound. */
+  const bool update_mode = !options.replace_existing_action;
   const AnimData *existing_anim_data = BKE_animdata_from_id(&target_armature.id);
-  if (!options.replace_existing_action && existing_anim_data != nullptr &&
-      existing_anim_data->action != nullptr) {
-    add_error(r_result,
-              reports,
-              "Target Armature already has an Action; refusing to replace it in C1-C");
-    return false;
-  }
+  bAction *existing_action = (update_mode && existing_anim_data != nullptr) ?
+                                 existing_anim_data->action :
+                                 nullptr;
   if (!options.use_linear_interpolation && !options.use_vmd_bezier_interpolation) {
     add_warning(r_result,
                 reports,
@@ -382,7 +444,7 @@ bool build_vmd_action(Main *bmain,
     TrackWriteInfo info;
     info.mapped = &mapped;
     info.pose_bone = pose_bone;
-    info.converter.compute_from_pose_bone(*pose_bone, target_armature);
+    info.converter.compute_from_pose_bone(*pose_bone, target_armature, options.use_pose_mode);
     info.location_path = escaped_pose_bone_path(mapped.armature_bone_name, "location");
     info.rotation_path = escaped_pose_bone_path(mapped.armature_bone_name,
                                                 "rotation_quaternion");
@@ -434,17 +496,39 @@ bool build_vmd_action(Main *bmain,
                 "Some VMD bone tracks are missing from the target Armature and were skipped");
   }
 
-  animrig::Action &action = animrig::action_add(*bmain, action_name);
-  animrig::Slot &slot = action.slot_add_for_id(target_armature.id);
-  action.layer_keystrip_ensure();
-  if (action.layers().is_empty() || action.layer(0)->strips().is_empty()) {
-    add_error(r_result, reports, "Failed to initialize the VMD Action keyframe strip");
-    BKE_id_free(bmain, &action.id);
-    return false;
+  animrig::Action *action = nullptr;
+  const bool created_action = (existing_action == nullptr);
+  if (existing_action != nullptr) {
+    /* UPDATE mode: write into the Action that is already bound. */
+    action = &existing_action->wrap();
   }
-  animrig::Strip &strip = *action.layer(0)->strip(0);
-  animrig::Channelbag &channelbag = strip.data<animrig::StripKeyframeData>(action)
-                                        .channelbag_for_slot_add(slot);
+  else {
+    action = &animrig::action_add(*bmain, action_name);
+  }
+  auto cleanup_on_error = [&]() {
+    if (created_action) {
+      BKE_id_free(bmain, &action->id);
+    }
+    return false;
+  };
+  animrig::Slot *slot = nullptr;
+  if (existing_anim_data != nullptr) {
+    slot = action->slot_for_handle(existing_anim_data->slot_handle);
+  }
+  if (slot == nullptr) {
+    slot = &action->slot_add_for_id(target_armature.id);
+  }
+  action->layer_keystrip_ensure();
+  if (action->layers().is_empty() || action->layer(0)->strips().is_empty()) {
+    add_error(r_result, reports, "Failed to initialize the VMD Action keyframe strip");
+    return cleanup_on_error();
+  }
+  animrig::Strip &strip = *action->layer(0)->strip(0);
+  animrig::StripKeyframeData &strip_data = strip.data<animrig::StripKeyframeData>(*action);
+  animrig::Channelbag *channelbag = strip_data.channelbag_for_slot(*slot);
+  if (channelbag == nullptr) {
+    channelbag = &strip_data.channelbag_for_slot_add(*slot);
+  }
 
   const animrig::KeyframeSettings key_settings = {
       BEZT_KEYTYPE_KEYFRAME, HD_AUTO_ANIM, options.use_linear_interpolation ? BEZT_IPO_LIN :
@@ -461,7 +545,7 @@ bool build_vmd_action(Main *bmain,
       descriptor.array_index = index;
       descriptor.prop_type = PROP_FLOAT;
       descriptor.prop_subtype = PROP_NONE;
-      FCurve &curve = channelbag.fcurve_ensure(nullptr, descriptor);
+      FCurve &curve = channelbag->fcurve_ensure(nullptr, descriptor);
       location_curves.push_back(&curve);
       r_result.location_fcurve_count++;
     }
@@ -471,7 +555,7 @@ bool build_vmd_action(Main *bmain,
       descriptor.array_index = index;
       descriptor.prop_type = PROP_FLOAT;
       descriptor.prop_subtype = PROP_NONE;
-      FCurve &curve = channelbag.fcurve_ensure(nullptr, descriptor);
+      FCurve &curve = channelbag->fcurve_ensure(nullptr, descriptor);
       rotation_curves.push_back(&curve);
       r_result.rotation_fcurve_count++;
     }
@@ -481,13 +565,22 @@ bool build_vmd_action(Main *bmain,
     for (const VMDBoneKeyframe *keyframe : track.keyframes) {
       int frame = 0;
       if (!checked_frame(*keyframe, options.frame_offset, frame, r_result, reports)) {
-        BKE_id_free(bmain, &action.id);
-        return false;
+        return cleanup_on_error();
+      }
+
+      /* R2-VMD mirror: X-mirror the motion values in MMD space before
+       * conversion (mmd_tools _MirrorMapper semantics). */
+      std::array<float, 3> translation = keyframe->translation;
+      std::array<float, 4> rotation_raw = keyframe->rotation;
+      if (track.mapped->use_mirror) {
+        translation[0] = -translation[0];
+        rotation_raw[1] = -rotation_raw[1];
+        rotation_raw[2] = -rotation_raw[2];
       }
 
       float location_values[3];
       track.converter.convert_location(
-          keyframe->translation.data(), location_values, options.coordinate_scale);
+          translation.data(), location_values, options.coordinate_scale);
       /* Validate source quaternion length BEFORE conversion.
        * convert_rotation normalizes the result, so the post-conversion
        * check would always pass. */
@@ -498,11 +591,10 @@ bool build_vmd_action(Main *bmain,
           keyframe->rotation[3] * keyframe->rotation[3]);
       if (!(src_rot_len > 0.0f) || !std::isfinite(src_rot_len)) {
         add_error(r_result, reports, "VMD keyframe contains a zero-length quaternion");
-        BKE_id_free(bmain, &action.id);
-        return false;
+        return cleanup_on_error();
       }
       std::array<float, 4> rotation;
-      track.converter.convert_rotation(keyframe->rotation.data(), rotation.data());
+      track.converter.convert_rotation(rotation_raw.data(), rotation.data());
       if (has_previous_rotation) {
         const float dot = rotation[0] * previous_rotation[0] +
                           rotation[1] * previous_rotation[1] +
@@ -522,8 +614,7 @@ bool build_vmd_action(Main *bmain,
         if (!write_keyframe(
                 *location_curves[index], frame, location_values[index], key_settings)) {
           add_error(r_result, reports, "Failed to insert VMD location keyframe");
-          BKE_id_free(bmain, &action.id);
-          return false;
+          return cleanup_on_error();
         }
         r_result.location_keyframe_count++;
       }
@@ -531,8 +622,7 @@ bool build_vmd_action(Main *bmain,
         if (!write_keyframe(
                 *rotation_curves[index], frame, rotation[index], key_settings)) {
           add_error(r_result, reports, "Failed to insert VMD quaternion keyframe");
-          BKE_id_free(bmain, &action.id);
-          return false;
+          return cleanup_on_error();
         }
         r_result.rotation_keyframe_count++;
       }
@@ -585,14 +675,13 @@ bool build_vmd_action(Main *bmain,
     }
   }
 
-  if (animrig::assign_action_and_slot(&action, &slot, target_armature.id) !=
+  if (animrig::assign_action_and_slot(action, slot, target_armature.id) !=
       animrig::ActionSlotAssignmentResult::OK) {
     for (const auto &[pose_bone, old_mode] : old_rotation_modes) {
       pose_bone->rotmode = old_mode;
     }
     add_error(r_result, reports, "Failed to bind the completed VMD Action to the Armature");
-    BKE_id_free(bmain, &action.id);
-    return false;
+    return cleanup_on_error();
   }
 
   r_result.action_bound = true;

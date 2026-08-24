@@ -13,6 +13,7 @@ struct wmOperatorType;
 namespace blender {
 
 void WM_OT_vmd_import(wmOperatorType *ot);
+void WM_OT_mmd_bake_motion(wmOperatorType *ot);
 void WM_OT_vmd_camera_import(wmOperatorType *ot);
 void WM_OT_vmd_export(wmOperatorType *ot);
 void WM_OT_vmd_camera_export(wmOperatorType *ot);

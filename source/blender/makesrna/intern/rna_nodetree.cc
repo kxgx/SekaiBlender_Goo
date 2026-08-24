@@ -10631,6 +10631,7 @@ static void rna_def_nodes(BlenderRNA *brna)
   define("ShaderNode", "ShaderNodePointInfo");
   define("ShaderNode", "ShaderNodeRadialTiling", def_sh_radial_tiling);
   define("ShaderNode", "ShaderNodeRaycast", def_sh_raycast);
+  define("ShaderNode", "ShaderNodeSetDepth");
   define("ShaderNode", "ShaderNodeRGB");
   define("ShaderNode", "ShaderNodeRGBCurve", def_rgb_curve);
   define("ShaderNode", "ShaderNodeRGBToBW");

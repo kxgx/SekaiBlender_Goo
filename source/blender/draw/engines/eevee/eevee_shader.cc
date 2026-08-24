@@ -695,7 +695,8 @@ class SlotAllocator {
 static SlotAllocator add_pipeline_create_info(gpu::shader::ShaderCreateInfo &info,
                                               eMaterialPipeline pipeline_type,
                                               eMaterialGeometry geometry_type,
-                                              const bool use_shader_to_rgba)
+                                              const bool use_shader_to_rgba,
+                                              const bool use_set_depth)
 {
   using namespace blender::gpu::shader;
 
@@ -841,27 +842,45 @@ static SlotAllocator add_pipeline_create_info(gpu::shader::ShaderCreateInfo &inf
             info.fragment_function("eevee_surf_hybrid");
           }
           else {
-            pipeline_info_name = "eevee_surf_deferred_infos_";
             info.name_ += "_deferred";
             info.compilation_constant(gpu::shader::Type::bool_t, "use_velocity", false);
             /* Until every vertex shader are ported, we need to bridge the gap here by defining the
              * pipeline. */
-            info.fragment_source("eevee_surf_deferred.bsl.hh");
-            info.fragment_function("eevee_surf_deferred");
+            if (use_set_depth) {
+              /* 深度变体：无 early_fragment_tests（允许 Set Depth 写 gl_FragDepth）。
+               * 必须配套使用变体自己的 *_infos_：原 surface 的 infos 烘焙了
+               * EARLY_FRAGMENT_TEST(true)，合并后驱动会丢弃 gl_FragDepth 写入。 */
+              pipeline_info_name = "eevee_surf_deferred_depth_infos_";
+              info.fragment_source("eevee_surf_deferred_depth.bsl.hh");
+              info.fragment_function("eevee_surf_deferred_depth");
+            }
+            else {
+              pipeline_info_name = "eevee_surf_deferred_infos_";
+              info.fragment_source("eevee_surf_deferred.bsl.hh");
+              info.fragment_function("eevee_surf_deferred");
+            }
           }
           /* Enable the access to `nt.crypto_hash`.
            * Necessary workaround for static shader compilation tests. */
           info.define("CREATE_INFO_eevee_nodetree");
           break;
         case MAT_PIPE_FORWARD:
-          pipeline_info_name = "eevee_surf_forward_infos_";
           info.define("closure_to_rgba", "closure_to_rgba_forward");
           info.compilation_constant(gpu::shader::Type::bool_t, "use_velocity", false);
           info.name_ += "_forward";
           /* Until every vertex shader are ported, we need to bridge the gap here by defining the
            * pipeline. */
-          info.fragment_source("eevee_surf_forward.bsl.hh");
-          info.fragment_function("eevee_surf_forward");
+          if (use_set_depth) {
+            /* 深度变体 infos（无 EARLY_FRAGMENT_TEST，允许 gl_FragDepth 写入）。 */
+            pipeline_info_name = "eevee_surf_forward_depth_infos_";
+            info.fragment_source("eevee_surf_forward_depth.bsl.hh");
+            info.fragment_function("eevee_surf_forward_depth");
+          }
+          else {
+            pipeline_info_name = "eevee_surf_forward_infos_";
+            info.fragment_source("eevee_surf_forward.bsl.hh");
+            info.fragment_function("eevee_surf_forward");
+          }
           break;
         default:
           BLI_assert_unreachable();
@@ -975,6 +994,18 @@ void ShaderModule::material_create_info_amend(GPUMaterial *gpumat, GPUCodegenOut
 
   bool use_ao_node = false;
 
+  /* Goo-engine 移植（C 包）：Set Depth 节点材质启用深度覆盖。
+   * - MAT_SET_DEPTH 供 nodetree GLSL（node_set_depth）写 gl_FragDepth；
+   * - FORWARD 管线切换到无 early_fragment_tests 的深度变体 shader；
+   * - depth_write(ANY) 显式放开深度写入（Metal 驱动按 goo 同款处理避免斑噪）。 */
+  const bool use_set_depth = GPU_material_flag_get(gpumat, GPU_MATFLAG_SET_DEPTH);
+  if (use_set_depth) {
+    info.define("MAT_SET_DEPTH");
+    info.define("USE_SET_DEPTH");
+    /* 管线对象烘焙：允许片段写 gl_FragDepth（与 material_add 的 DRW_STATE_WRITE_DEPTH 配套）。 */
+    info.depth_write(DepthWrite::ANY);
+  }
+
   if (GPU_material_flag_get(gpumat, GPU_MATFLAG_AO) &&
       ELEM(pipeline_type, MAT_PIPE_FORWARD, MAT_PIPE_DEFERRED) &&
       geometry_type_has_surface(geometry_type))
@@ -1028,7 +1059,11 @@ void ShaderModule::material_create_info_amend(GPUMaterial *gpumat, GPUCodegenOut
    * SlotAllocator. */
 
   SlotAllocator slots = add_pipeline_create_info(
-      info, pipeline_type, geometry_type, use_shader_to_rgba);
+      info,
+      pipeline_type,
+      geometry_type,
+      use_shader_to_rgba,
+      GPU_material_flag_get(gpumat, GPU_MATFLAG_SET_DEPTH));
 
   if (GPU_material_flag_get(gpumat, GPU_MATFLAG_SHADER_TO_RGBA)) {
     info.define("MAT_SHADER_TO_RGBA");
@@ -1451,7 +1486,10 @@ void ShaderModule::material_create_info_amend(GPUMaterial *gpumat, GPUCodegenOut
     info.batch_resources_.clear();
   }
 
-  material_create_info_pipelines_amend(geometry_type, pipeline_type, info);
+  material_create_info_pipelines_amend(geometry_type,
+                                       pipeline_type,
+                                       info,
+                                       GPU_material_flag_get(gpumat, GPU_MATFLAG_SET_DEPTH));
 }
 
 struct CallbackThunk {
@@ -1606,7 +1644,8 @@ GPUMaterial *ShaderModule::world_shader_get(blender::World *blender_world,
 
 void ShaderModule::material_create_info_pipelines_amend(eMaterialGeometry geometry_type,
                                                         eMaterialPipeline pipeline_type,
-                                                        gpu::shader::ShaderCreateInfo &r_info)
+                                                        gpu::shader::ShaderCreateInfo &r_info,
+                                                        bool use_set_depth)
 {
   /* Pipeline states to compile during shader compilation. */
   if (geometry_type == MAT_GEOM_WORLD) {
@@ -1724,10 +1763,11 @@ void ShaderModule::material_create_info_pipelines_amend(eMaterialGeometry geomet
     case MAT_PIPE_DEFERRED: {
       r_info.pipeline_state()
           .primitive(prim_type)
-          .state(GPU_WRITE_COLOR | GPU_WRITE_STENCIL,
+          .state(use_set_depth ? (GPU_WRITE_COLOR | GPU_WRITE_DEPTH | GPU_WRITE_STENCIL) :
+                                 (GPU_WRITE_COLOR | GPU_WRITE_STENCIL),
                  GPU_BLEND_NONE,
                  GPU_CULL_NONE,
-                 GPU_DEPTH_EQUAL,
+                 use_set_depth ? GPU_DEPTH_ALWAYS : GPU_DEPTH_EQUAL,
                  GPU_STENCIL_ALWAYS,
                  GPU_STENCIL_OP_REPLACE,
                  GPU_VERTEX_LAST)
@@ -1796,10 +1836,10 @@ void ShaderModule::material_create_info_pipelines_amend(eMaterialGeometry geomet
     case MAT_PIPE_FORWARD: {
       r_info.pipeline_state()
           .primitive(prim_type)
-          .state(GPU_WRITE_COLOR,
+          .state(use_set_depth ? (GPU_WRITE_COLOR | GPU_WRITE_DEPTH) : GPU_WRITE_COLOR,
                  GPU_BLEND_NONE,
                  GPU_CULL_NONE,
-                 GPU_DEPTH_EQUAL,
+                 use_set_depth ? GPU_DEPTH_ALWAYS : GPU_DEPTH_EQUAL,
                  GPU_STENCIL_NONE,
                  GPU_STENCIL_OP_NONE,
                  GPU_VERTEX_LAST)

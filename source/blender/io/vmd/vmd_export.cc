@@ -697,14 +697,19 @@ void check_camera_rig_pose(const ExportCameraTrack &track,
 
 }  // namespace
 
-bool export_vmd_action(const Object &armature,
+bool export_vmd_action(const Object *armature,
                        const std::string &filepath,
                        const VMDExportOptions &options,
                        ReportList *reports,
                        VMDExportReport &r_report)
 {
   r_report = {};
-  if (armature.type != OB_ARMATURE || armature.pose == nullptr) {
+  if (armature == nullptr && options.morph_controller == nullptr) {
+    add_error(r_report, reports, "VMD export requires an Armature or a Morph controller");
+    return false;
+  }
+  if (armature != nullptr &&
+      (armature->type != OB_ARMATURE || armature->pose == nullptr)) {
     add_error(r_report, reports, "VMD export requires an Armature with a Pose");
     return false;
   }
@@ -716,9 +721,10 @@ bool export_vmd_action(const Object &armature,
     add_error(r_report, reports, "VMD export coordinate scale must be finite and positive");
     return false;
   }
-  const AnimData *anim_data = BKE_animdata_from_id(&armature.id);
-  if (anim_data == nullptr || anim_data->action == nullptr ||
-      anim_data->slot_handle == animrig::Slot::unassigned)
+  const AnimData *anim_data = armature != nullptr ? BKE_animdata_from_id(&armature->id) : nullptr;
+  if (armature != nullptr &&
+      (anim_data == nullptr || anim_data->action == nullptr ||
+       anim_data->slot_handle == animrig::Slot::unassigned))
   {
     add_error(r_report, reports, "VMD export requires an active Action and assigned Action slot");
     return false;
@@ -726,6 +732,7 @@ bool export_vmd_action(const Object &armature,
 
   std::map<std::string, ExportBoneTrack> tracks;
   std::string frame_error;
+  if (armature != nullptr) {
   bke::BKE_action_find_fcurves_with_bones(
       anim_data->action, anim_data->slot_handle, [&](const FCurve *curve, const char *bone_name) {
         if (curve == nullptr || curve->rna_path().is_empty() || bone_name == nullptr) {
@@ -752,6 +759,7 @@ bool export_vmd_action(const Object &armature,
           return;
         }
       });
+  }
   if (!frame_error.empty()) {
     add_error(r_report, reports, frame_error);
     return false;
@@ -759,7 +767,12 @@ bool export_vmd_action(const Object &armature,
 
   VMDModel model;
   model.header.signature = "Vocaloid Motion Data 0002";
-  model.header.model_name = options.model_name.empty() ? armature.id.name + 2 : options.model_name;
+  model.header.model_name = options.model_name.empty() ?
+                                (armature != nullptr ? armature->id.name + 2 :
+                                                       (options.morph_controller != nullptr ?
+                                                            options.morph_controller->id.name + 2 :
+                                                            "MMD Motion")) :
+                                options.model_name;
   model.header.compatible = true;
   for (auto &[name, track] : tracks) {
     const bool has_location = std::any_of(
@@ -769,7 +782,9 @@ bool export_vmd_action(const Object &armature,
     if (!has_location && !has_rotation) {
       continue;
     }
-    bPoseChannel *pchan = BKE_pose_channel_find_name(armature.pose, name.c_str());
+    bPoseChannel *pchan = armature != nullptr ?
+                              BKE_pose_channel_find_name(armature->pose, name.c_str()) :
+                              nullptr;
     if (pchan == nullptr) {
       add_warning(r_report, reports, "Skipping Action curves for missing Pose bone: " + name);
       continue;
@@ -777,7 +792,7 @@ bool export_vmd_action(const Object &armature,
     /* Preserve the cropped range boundaries even when all source keys are outside it. */
     track.frames.insert(options.frame_start);
     track.frames.insert(options.frame_end);
-    track.converter.compute_from_pose_bone(*pchan, armature);
+    track.converter.compute_from_pose_bone(*pchan, *armature, false);
     const std::vector<int> frames(track.frames.begin(), track.frames.end());
     float previous_vmd_rotation[4] = {};
     bool has_previous_rotation = false;

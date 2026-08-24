@@ -30,6 +30,20 @@ struct VMDImportOptions {
   float coordinate_scale = 0.08f;
   bool use_linear_interpolation = true;
   bool use_vmd_bezier_interpolation = false;
+  /* mmd_tools 选项移植（R2-VMD）：镜像整段动作（左右翻转目标 + X 镜像值）。 */
+  bool use_mirror = false;
+  /* 把当前姿势当作基准姿势（Treat Current Pose as Rest Pose），
+   * 适配 T-Pose/A-Pose 与模型当前姿势不一致导致的位置漂移。 */
+  bool use_pose_mode = false;
+  /* 导入 VMD IK 开关轨道（默认开启，配合原生 CCD 求解器）。 */
+  bool include_ik = true;
+  /* 导入后自动设置场景帧率(30fps)与帧范围（默认开启）。 */
+  bool update_scene_settings = true;
+  /* R3-VMD (mmd_tools parity): import the Action as an NLA strip instead of
+   * binding it as the Armature's active Action. */
+  bool use_nla = false;
+  /* R3-VMD: hard-cut detection for camera tracks. */
+  bool detect_camera_changes = true;
 };
 
 struct VMDImportReport {

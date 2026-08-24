@@ -44,6 +44,7 @@ set(SRC
   io_usd.cc
   io_utils.cc
   io_vmd_ops.cc
+  io_mmd_bake_ops.cc
 
   io_alembic.hh
   io_cache.hh

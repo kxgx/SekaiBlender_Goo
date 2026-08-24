@@ -93,6 +93,7 @@ void ED_operatortypes_io()
 #endif
 
   WM_operatortype_append(WM_OT_vmd_import);
+  WM_operatortype_append(WM_OT_mmd_bake_motion);
   WM_operatortype_append(WM_OT_vmd_camera_import);
   WM_operatortype_append(WM_OT_vmd_export);
   WM_operatortype_append(WM_OT_vmd_camera_export);

@@ -534,6 +534,11 @@ void ForwardPipeline::transparent_add(const Object *ob,
   DRWState material_state = DRW_STATE_WRITE_COLOR | DRW_STATE_BLEND_TRANSPARENCY |
                             DRW_STATE_CLIP_CONTROL_UNIT_RANGE | inst_.film.depth.test_state;
 
+  /* Goo-engine 移植：Set Depth 材质在前向（透明/shader-to-rgb）通路写自定义深度。 */
+  if (GPU_material_flag_get(gpumat, GPU_MATFLAG_SET_DEPTH)) {
+    material_state |= DRW_STATE_WRITE_DEPTH;
+  }
+
   if (blender_mat->blend_flag & MA_BL_CULL_BACKFACE) {
     prepass_state |= DRW_STATE_CULL_BACK;
     material_state |= DRW_STATE_CULL_BACK;
@@ -1064,6 +1069,13 @@ PassMain::Sub *DeferredLayer::material_add(blender::Material *blender_mat, GPUMa
   uint8_t material_stencil_bits = 0u;
   if (blender_mat->blend_flag & MA_BL_THICKNESS_FROM_SHADOW) {
     material_stencil_bits |= uint8_t(StencilBits::THICKNESS_FROM_SHADOW);
+  }
+  /* Goo-engine 移植：Set Depth 材质写自定义深度（覆盖 prepass 深度），
+   * 深度测试改用 ALWAYS 以免自定义深度与 prepass 不相等导致整体被剔除。 */
+  if (GPU_material_flag_get(gpumat, GPU_MATFLAG_SET_DEPTH)) {
+    material_pass->state_set(DRW_STATE_WRITE_COLOR | DRW_STATE_WRITE_DEPTH |
+                             DRW_STATE_DEPTH_ALWAYS | DRW_STATE_WRITE_STENCIL |
+                             DRW_STATE_CLIP_CONTROL_UNIT_RANGE | DRW_STATE_STENCIL_ALWAYS);
   }
   /* We use this opportunity to clear the stencil bits. The undefined areas are discarded using the
    * gbuf header value. */

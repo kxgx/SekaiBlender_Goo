@@ -425,7 +425,7 @@ class SCENE_PT_rigid_body_field_weights(RigidBodySubPanel, Panel):
 class SCENE_PT_eevee_light_probes(SceneButtonsPanel, Panel):
     bl_label = "Light Probes"
     bl_options = {'DEFAULT_CLOSED'}
-    COMPAT_ENGINES = {'BLENDER_EEVEE'}
+    COMPAT_ENGINES = {'BLENDER_EEVEE', 'BLENDER_GOOENGINE'}
 
     @classmethod
     def poll(cls, context):

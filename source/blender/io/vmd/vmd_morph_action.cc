@@ -135,14 +135,12 @@ bool build_vmd_morph_action(Main *bmain,
     return false;
   }
 
+  /* R2-VMD: replace_existing_action=false switches to UPDATE mode — new
+   * keyframes are written into the Key's existing Morph Action. */
   const AnimData *existing_anim_data = BKE_animdata_from_id(&target_key.id);
-  if (!options.replace_existing_action && existing_anim_data != nullptr &&
-      existing_anim_data->action != nullptr) {
-    add_error(r_result,
-              reports,
-              "Target Key already has an Action; refusing to replace it in C2-1C");
-    return false;
-  }
+  bAction *existing_action = (!options.replace_existing_action && existing_anim_data != nullptr) ?
+                                 existing_anim_data->action :
+                                 nullptr;
   if (!options.use_linear_interpolation) {
     add_warning(r_result,
                 reports,
@@ -242,17 +240,38 @@ bool build_vmd_morph_action(Main *bmain,
     tracks.push_back(std::move(info));
   }
 
-  animrig::Action &action = animrig::action_add(*bmain, action_name);
-  animrig::Slot &slot = action.slot_add_for_id(target_key.id);
-  action.layer_keystrip_ensure();
-  if (action.layers().is_empty() || action.layer(0)->strips().is_empty()) {
-    add_error(r_result, reports, "Failed to initialize the VMD Morph Action keyframe strip");
-    free_action(bmain, &action);
-    return false;
+  animrig::Action *action = nullptr;
+  const bool created_action = (existing_action == nullptr);
+  if (existing_action != nullptr) {
+    action = &existing_action->wrap();
   }
-  animrig::Strip &strip = *action.layer(0)->strip(0);
-  animrig::Channelbag &channelbag = strip.data<animrig::StripKeyframeData>(action)
-                                        .channelbag_for_slot_add(slot);
+  else {
+    action = &animrig::action_add(*bmain, action_name);
+  }
+  auto cleanup_on_error = [&]() {
+    if (created_action) {
+      free_action(bmain, action);
+    }
+    return false;
+  };
+  animrig::Slot *slot = nullptr;
+  if (existing_anim_data != nullptr) {
+    slot = action->slot_for_handle(existing_anim_data->slot_handle);
+  }
+  if (slot == nullptr) {
+    slot = &action->slot_add_for_id(target_key.id);
+  }
+  action->layer_keystrip_ensure();
+  if (action->layers().is_empty() || action->layer(0)->strips().is_empty()) {
+    add_error(r_result, reports, "Failed to initialize the VMD Morph Action keyframe strip");
+    return cleanup_on_error();
+  }
+  animrig::Strip &strip = *action->layer(0)->strip(0);
+  animrig::StripKeyframeData &strip_data = strip.data<animrig::StripKeyframeData>(*action);
+  animrig::Channelbag *channelbag = strip_data.channelbag_for_slot(*slot);
+  if (channelbag == nullptr) {
+    channelbag = &strip_data.channelbag_for_slot_add(*slot);
+  }
 
   const animrig::KeyframeSettings key_settings = {
       BEZT_KEYTYPE_KEYFRAME, HD_AUTO_ANIM, options.use_linear_interpolation ? BEZT_IPO_LIN :
@@ -264,7 +283,7 @@ bool build_vmd_morph_action(Main *bmain,
     descriptor.array_index = 0;
     descriptor.prop_type = PROP_FLOAT;
     descriptor.prop_subtype = PROP_NONE;
-    FCurve &curve = channelbag.fcurve_ensure(nullptr, descriptor);
+    FCurve &curve = channelbag->fcurve_ensure(nullptr, descriptor);
     r_result.fcurve_count++;
 
     for (const VMDMorphKeyframe *keyframe : track.keyframes) {
@@ -274,19 +293,17 @@ bool build_vmd_morph_action(Main *bmain,
         add_error(r_result,
                   reports,
                   "Failed to insert VMD Morph keyframe: " + track.mapped->target_morph_name);
-        free_action(bmain, &action);
-        return false;
+        return cleanup_on_error();
       }
       r_result.keyframe_count++;
     }
     BKE_fcurve_handles_recalc(curve);
   }
 
-  if (animrig::assign_action_and_slot(&action, &slot, target_key.id) !=
+  if (animrig::assign_action_and_slot(action, slot, target_key.id) !=
       animrig::ActionSlotAssignmentResult::OK) {
     add_error(r_result, reports, "Failed to bind the completed VMD Morph Action to the Key");
-    free_action(bmain, &action);
-    return false;
+    return cleanup_on_error();
   }
 
   /* [世界的歌] C2-2E / R1-VMD: report Group Morph raw channels explicitly. A

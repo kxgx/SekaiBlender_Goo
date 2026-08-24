@@ -6,6 +6,7 @@
  * \ingroup io_vmd
  */
 
+#include "vmd_adapt.hh"
 #include "vmd_import.hh"
 
 #include "ANIM_action.hh"
@@ -110,6 +111,17 @@ void append_mapping_report(VMDImportReport &result, ReportList *reports)
       result.warnings.push_back(issue.path + ": " + issue.message);
       BKE_report(reports, RPT_INFO, result.warnings.back().c_str());
     }
+    else {
+      /* Info: motion adaptation notices (alias / normalized / D-bone). */
+      result.warnings.push_back(issue.path + ": " + issue.message);
+      BKE_report(reports, RPT_INFO, result.warnings.back().c_str());
+    }
+  }
+  if (result.mapping.adapted_track_count > 0) {
+    const std::string summary = std::to_string(result.mapping.adapted_track_count) +
+                                " VMD bone track(s) auto-adapted to the target Armature";
+    result.warnings.push_back(summary);
+    BKE_report(reports, RPT_INFO, summary.c_str());
   }
 }
 
@@ -146,6 +158,17 @@ void append_morph_mapping_report(VMDImportReport &result, ReportList *reports)
       result.warnings.push_back(message);
       BKE_report(reports, RPT_INFO, result.warnings.back().c_str());
     }
+    else {
+      /* Info: morph adaptation notices. */
+      result.warnings.push_back(message);
+      BKE_report(reports, RPT_INFO, result.warnings.back().c_str());
+    }
+  }
+  if (result.morph_mapping.adapted_track_count > 0) {
+    const std::string summary = std::to_string(result.morph_mapping.adapted_track_count) +
+                                " VMD morph track(s) auto-adapted to the target Controller";
+    result.warnings.push_back(summary);
+    BKE_report(reports, RPT_INFO, summary.c_str());
   }
 }
 
@@ -311,14 +334,6 @@ bool same_model_context(const Object &armature,
   return true;
 }
 
-bool any_existing_action(const Object &armature, const Key &key)
-{
-  const AnimData *armature_anim_data = BKE_animdata_from_id(&armature.id);
-  const AnimData *key_anim_data = BKE_animdata_from_id(&key.id);
-  return (armature_anim_data != nullptr && armature_anim_data->action != nullptr) ||
-         (key_anim_data != nullptr && key_anim_data->action != nullptr);
-}
-
 void append_action_report(VMDImportReport &result)
 {
   result.warnings.insert(result.warnings.end(),
@@ -418,6 +433,50 @@ void apply_vmd_ik_toggle(Object &target_armature,
     }
   }
   if (ik_defs.empty()) {
+    /* R4-VMD: models imported by older builds lack the persisted PMX IK
+     * definition. Fall back to the Blender IK constraints those builds
+     * created: the constraint subtarget is the IK control bone and the
+     * constrained bone is the chain link (mmd_tools mechanism). */
+    if (target_armature.pose != nullptr) {
+      for (bPoseChannel *pchan = static_cast<bPoseChannel *>(target_armature.pose->chanbase.first);
+           pchan != nullptr;
+           pchan = pchan->next)
+      {
+        for (bConstraint *con = static_cast<bConstraint *>(pchan->constraints.first);
+             con != nullptr;
+             con = con->next)
+        {
+          if (con->type != CONSTRAINT_TYPE_KINEMATIC || con->data == nullptr) {
+            continue;
+          }
+          const bKinematicConstraint *ik_data =
+              static_cast<const bKinematicConstraint *>(con->data);
+          if (ik_data->subtarget[0] == '\0') {
+            continue;
+          }
+          IKDef def;
+          def.ik_bone_name = ik_data->subtarget;
+          def.constraint_bone_name = pchan->name;
+          ik_defs.push_back(std::move(def));
+        }
+      }
+    }
+    if (!ik_defs.empty()) {
+      BKE_reportf(reports,
+                  RPT_INFO,
+                  "IK definition not found on the target Armature; falling back to %d Blender "
+                  "IK constraint(s) for the IK/FK switch (re-import the PMX with a current build "
+                  "to use the native solver)",
+                  int(ik_defs.size()));
+    }
+    else {
+      BKE_report(reports,
+                 RPT_WARNING,
+                 "No IK definition or IK constraints found on the target Armature; VMD IK "
+                 "toggle tracks cannot be applied (legs play FK keys only)");
+    }
+  }
+  if (ik_defs.empty()) {
     return;
   }
 
@@ -455,6 +514,27 @@ void apply_vmd_ik_toggle(Object &target_armature,
     return;
   }
 
+  /* R4-VMD: VMD property bone names use the motion's own convention (Japanese
+   * standard) while the model may use normalized English names (足ＩＫ.L).
+   * Resolve every property snapshot bone through the adaptation layer. */
+  std::unordered_map<std::string, int> ik_target_exact;
+  std::unordered_map<std::string, int> ik_target_normalized;
+  const std::vector<std::string> bone_names = collect_bone_names(*armature);
+  {
+    for (size_t index = 0; index < bone_names.size(); index++) {
+      ik_target_exact.emplace(bone_names[index], int(index));
+      ik_target_normalized.emplace(normalize_mmd_name(bone_names[index]), int(index));
+    }
+  }
+  auto resolve_ik_name = [&](const std::string &vmd_name) -> std::string {
+    const VMDNameResolution resolution = resolve_bone_name(
+        vmd_name, ik_target_exact, ik_target_normalized);
+    if (resolution.target_index < 0) {
+      return std::string();
+    }
+    return bone_names[size_t(resolution.target_index)];
+  };
+
   /* Build per-bone timelines from VMD property keyframes.
    * Each property keyframe is a full snapshot; we record the on/off state
    * for every IK bone at that frame. */
@@ -476,7 +556,7 @@ void apply_vmd_ik_toggle(Object &target_armature,
       /* Check if this snapshot mentions our bone. */
       bool found = false;
       for (const VMDPropertyIKState &state : pk.ik_states) {
-        if (state.bone_name == bone_name) {
+        if (state.bone_name == bone_name || resolve_ik_name(state.bone_name) == bone_name) {
           current_state = state.enabled;
           found = true;
           break;
@@ -667,7 +747,7 @@ bool import_vmd_action(Main *bmain,
 
     BKE_pose_ensure(bmain, &target_armature, armature, false);
     const std::vector<std::string> target_bone_names = collect_bone_names(*armature);
-    r_result.mapping = map_bone_tracks(model, target_bone_names);
+    r_result.mapping = map_bone_tracks(model, target_bone_names, options.use_mirror);
     append_mapping_report(r_result, reports);
 
     if (!r_result.mapping.mapping_valid) {
@@ -683,6 +763,8 @@ bool import_vmd_action(Main *bmain,
     action_options.coordinate_scale = options.coordinate_scale;
     action_options.use_linear_interpolation = options.use_linear_interpolation;
     action_options.use_vmd_bezier_interpolation = options.use_vmd_bezier_interpolation;
+    action_options.use_mirror = options.use_mirror;
+    action_options.use_pose_mode = options.use_pose_mode;
 
     const std::string action_name = action_name_from_path(filepath);
     if (!build_vmd_action(bmain,
@@ -701,7 +783,9 @@ bool import_vmd_action(Main *bmain,
       return false;
     }
 
-    apply_vmd_ik_toggle(target_armature, model, options.frame_offset, reports);
+    if (options.include_ik) {
+      apply_vmd_ik_toggle(target_armature, model, options.frame_offset, reports);
+    }
 
     r_result.success = true;
     return true;
@@ -743,13 +827,6 @@ bool import_vmd_action_with_morphs(Main *bmain,
 
   Mesh *controller_mesh = id_cast<Mesh *>(target_morph_controller.data);
   Key *controller_key = controller_mesh->key;
-  if (!options.replace_existing_action && any_existing_action(target_armature, *controller_key)) {
-    add_error(r_result,
-              reports,
-              "VMD targets already have an Action; refusing to replace Armature or Morph Action");
-    return false;
-  }
-
   try {
     VMDModel model = read_vmd(filepath, &r_result.read);
     append_read_report(r_result, reports);
@@ -760,8 +837,8 @@ bool import_vmd_action_with_morphs(Main *bmain,
     BKE_pose_ensure(bmain, &target_armature, armature, false);
     const std::vector<std::string> bone_names = collect_bone_names(*armature);
     const std::vector<std::string> morph_names = collect_morph_names(target_morph_controller);
-    r_result.mapping = map_bone_tracks(model, bone_names);
-    r_result.morph_mapping = map_morph_tracks(model, morph_names);
+    r_result.mapping = map_bone_tracks(model, bone_names, options.use_mirror);
+    r_result.morph_mapping = map_morph_tracks(model, morph_names, options.use_mirror);
     /* [世界的歌] R4: If the PMX importer never persisted the morph definition on
      * this controller, the Group/Vertex morph-type distinction is unavailable.
      * This is a soft capability warning, not a failure: Vertex Morphs import
@@ -802,6 +879,8 @@ bool import_vmd_action_with_morphs(Main *bmain,
     action_options.coordinate_scale = options.coordinate_scale;
     action_options.use_linear_interpolation = options.use_linear_interpolation;
     action_options.use_vmd_bezier_interpolation = options.use_vmd_bezier_interpolation;
+    action_options.use_mirror = options.use_mirror;
+    action_options.use_pose_mode = options.use_pose_mode;
 
     if (!build_vmd_action(bmain,
                           target_armature,
@@ -816,7 +895,9 @@ bool import_vmd_action_with_morphs(Main *bmain,
       return false;
     }
 
-    apply_vmd_ik_toggle(target_armature, model, options.frame_offset, reports);
+    if (options.include_ik) {
+      apply_vmd_ik_toggle(target_armature, model, options.frame_offset, reports);
+    }
 
     if (r_result.morph_mapping.mapped_track_count == 0) {
       r_result.morph_action.skipped = true;
@@ -943,6 +1024,7 @@ bool import_vmd_camera(Main *bmain,
     camera_options.coordinate_scale = options.coordinate_scale;
     camera_options.use_linear_interpolation = options.use_linear_interpolation;
     camera_options.use_vmd_bezier_interpolation = options.use_vmd_bezier_interpolation;
+    camera_options.detect_camera_changes = options.detect_camera_changes;
     if (!build_vmd_camera_action(bmain,
                                  *target_empty,
                                  *camera_object,

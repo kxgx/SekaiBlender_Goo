@@ -52,11 +52,19 @@ struct BoneConverter {
    *  interpolation_indices[Blender_axis] = VMD_channel_index. */
   int interpolation_indices[3] = {0, 1, 2};
 
+  /* R2-VMD (BoneConverterPoseMode port): pose-mode basis rotation combined
+   * with the conversion matrix, and the current pose location offset. */
+  float mat_loc[3][3];
+  float offset[3] = {0.0f, 0.0f, 0.0f};
+  bool pose_mode = false;
+
   /** Default constructor: identity conversion. */
   BoneConverter();
 
   /** Build the converter from a PoseChannel's rest-pose armature matrix. */
-  void compute_from_pose_bone(const bPoseChannel &pchan, const Object &ob);
+  void compute_from_pose_bone(const bPoseChannel &pchan,
+                              const Object &ob,
+                              const bool use_pose_mode);
 
   /** Convert a VMD location (MMD Y-up) to bone-local space. */
   void convert_location(const float vmd_loc[3], float bl_loc[3], float scale) const;
@@ -78,6 +86,10 @@ struct VMDActionOptions {
   bool use_linear_interpolation = true;
   bool use_vmd_bezier_interpolation = false;
   float coordinate_scale = 0.08f;
+  /* R2-VMD (mmd_tools parity): mirror the whole motion across X. */
+  bool use_mirror = false;
+  /* R2-VMD: treat the current pose as the rest pose (T-Pose/A-Pose base). */
+  bool use_pose_mode = false;
 };
 
 struct VMDActionReport {

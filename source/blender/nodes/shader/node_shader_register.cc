@@ -4,6 +4,8 @@
 
 #include "NOD_register.hh"
 
+#include "NOD_shader_set_depth.hh"
+
 #include "node_shader_register.hh"
 
 namespace blender {
@@ -11,6 +13,8 @@ namespace blender {
 void register_shader_nodes()
 {
   register_node_tree_type_sh();
+
+  register_node_type_sh_set_depth();
 
   register_node_type_sh_group();
 
