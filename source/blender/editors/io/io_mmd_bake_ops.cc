@@ -307,8 +307,9 @@ wmOperatorStatus wm_mmd_bake_motion_exec(bContext *C, wmOperator *op)
     }
     BKE_reportf(op->reports,
                 RPT_INFO,
-                "GPU bake: %d frames x %d bones in %.1f ms (CPU %.1f ms); "
+                "GPU bake (%s): %d frames x %d bones in %.1f ms (CPU %.1f ms); "
                 "quat error (sign-aware) max %.6f mean %.6f",
+                blender::mmd::mmd_ccd_bake_gpu_last_backend(),
                 frame_count,
                 bone_count,
                 gpu_ms,

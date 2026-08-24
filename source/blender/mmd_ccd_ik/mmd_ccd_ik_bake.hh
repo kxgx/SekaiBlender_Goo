@@ -66,6 +66,9 @@ struct MmdCCDBakeBuffers {
 bool mmd_ccd_bake_gpu(MmdCCDBakeBuffers &buffers,
                       std::vector<float> &r_q_current /* frame×bone×4 */);
 
+/** 上次 GPU 烘焙实际使用的后端（"CUDA" / "Vulkan" / "none"）。 */
+const char *mmd_ccd_bake_gpu_last_backend();
+
 /** CPU 参照路径：对相同输入调用 mmd_ccd_v8_solve_all_chains。 */
 void mmd_ccd_bake_cpu_reference(MmdCCDBakeBuffers &buffers,
                                 std::vector<float> &r_q_current /* frame×bone×4 */);

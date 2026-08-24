@@ -750,6 +750,37 @@ endif()
 #    string(APPEND CMAKE_C_FLAGS " /WX")
 # endif()
 
+# R9-CUDA：MMD CCD 烘焙的 CUDA 后端（NVIDIA 快路径；不可用时回退 Vulkan/CPU）。
+option(WITH_MMD_BAKE_CUDA "Compile the CUDA backend for the MMD CCD GPU bake" ON)
+if(WITH_MMD_BAKE_CUDA)
+  find_package(CUDAToolkit QUIET)
+  if(NOT CUDAToolkit_FOUND OR NOT CUDAToolkit_NVCC_EXECUTABLE)
+    set(WITH_MMD_BAKE_CUDA OFF)
+  endif()
+endif()
+
+if(WITH_MMD_BAKE_CUDA)
+  set(_mmd_bake_cuda_obj ${CMAKE_CURRENT_BINARY_DIR}/mmd_bake_kernels.obj)
+  add_custom_command(
+    OUTPUT ${_mmd_bake_cuda_obj}
+    COMMAND ${CUDAToolkit_NVCC_EXECUTABLE}
+            -c -O2 -std=c++17
+            -gencode=arch=compute_86,code=sm_86
+            -gencode=arch=compute_89,code=sm_89
+            -Xcompiler=/MD
+            ${CMAKE_CURRENT_SOURCE_DIR}/../mmd_ccd_ik/mmd_bake_kernels.cu
+            -o ${_mmd_bake_cuda_obj}
+    DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/../mmd_ccd_ik/mmd_bake_kernels.cu
+            ${CMAKE_CURRENT_SOURCE_DIR}/../mmd_ccd_ik/mmd_bake_gpu_types.hh
+    COMMENT "Compiling MMD bake CUDA kernels"
+    VERBATIM)
+  list(APPEND SRC ${_mmd_bake_cuda_obj})
+  list(APPEND INC ${CUDAToolkit_INCLUDE_DIRS})
+  list(APPEND LIB "${CUDAToolkit_LIBRARY_DIR}/cudart_static.lib"
+                  "${CUDAToolkit_LIBRARY_DIR}/cudadevrt.lib")
+  add_definitions(-DWITH_MMD_BAKE_CUDA)
+endif()
+
 blender_add_lib(bf_blenkernel "${SRC}" "${INC}" "${INC_SYS}" "${LIB}")
 add_library(bf::blenkernel ALIAS bf_blenkernel)
 
