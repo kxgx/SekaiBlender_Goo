@@ -833,6 +833,10 @@ constexpr int kDefaultBakeSubstepsPerFrame = 5;
 constexpr const char *kBakeSubstepsProperty = "mmd_physics_bake_substeps_per_frame";
 constexpr const char *kBakeProvenanceProperty = "mmd_physics_bake";
 constexpr const char *kPanelLanguageProperty = "mmd_physics_panel_language";
+/* R10：烘焙预热帧数 —— 采样开始前在起始帧姿态下预先沉降的固定步数
+ * （帧数）。冷启动会把衣服/头发的沉降过程烘焙进动作，导致开头一段
+ * 看起来"没有物理"；预热后采样从自然垂坠状态开始。 */
+constexpr int kPhysicsBakeWarmupFrames = 60;
 
 enum class MMDPhysicsPanelLanguage : int {
   Chinese = 0,
@@ -3065,6 +3069,17 @@ wmOperatorStatus physics_bake_exec(bContext *C, wmOperator *op)
   world->apply_dynamic_to_pose();
   world->flush_depsgraph(depsgraph);
 
+  /* R10：预热沉降 —— 起始帧姿态下先跑 kPhysicsBakeWarmupFrames 帧固定步，
+   * 让衣服/头发在采样前达到自然垂坠，避免冷启动沉降被烘焙进动作。 */
+  for (int w = 0; w < kPhysicsBakeWarmupFrames; w++) {
+    world->step_full(fixed_timestep * float(bake_substeps_per_frame),
+                     1,
+                     false,
+                     bake_substeps_per_frame);
+    world->apply_dynamic_to_pose();
+    world->flush_depsgraph(depsgraph);
+  }
+
   std::vector<PhysicsBakeTrack> tracks;
   tracks.reserve(session->binding.dynamic_bone_names.size() +
                  session->binding.dynamic_merge_bone_names.size());
@@ -3402,6 +3417,16 @@ bool physics_bake_modal_initialize(bContext *C, wmOperator *op, PhysicsBakeModal
   prepare_world_for_simulation(*data.session);
   world->apply_dynamic_to_pose();
   world->flush_depsgraph(data.depsgraph);
+
+  /* R10：预热沉降（与同步路径一致）。 */
+  for (int w = 0; w < kPhysicsBakeWarmupFrames; w++) {
+    world->step_full(data.fixed_timestep * float(data.fixed_steps_per_frame),
+                     1,
+                     false,
+                     data.fixed_steps_per_frame);
+    world->apply_dynamic_to_pose();
+    world->flush_depsgraph(data.depsgraph);
+  }
 
   data.tracks.reserve(data.session->binding.dynamic_bone_names.size() +
                       data.session->binding.dynamic_merge_bone_names.size());
