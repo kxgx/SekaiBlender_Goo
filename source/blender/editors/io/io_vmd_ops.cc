@@ -479,8 +479,56 @@ static int vmd_suspend_mmd_approx_constraints(Main *bmain, Object *ob)
   return suspended;
 }
 
-static bool vmd_is_rigify_bridge_armature(const Object &object)
+/* R10-FIX：烘焙后 FK 动作覆盖全部链骨，无条件挂起所有 MMD 近似 IK 与原生
+ * CCD，避免 iTaSC 继续把腿解向"静止在原点附近的 足IK 目标"（烘焙动作没有
+ * 足IK 位移曲线——"腿找原点"）。不读取 mmd_ik_toggle 兜底属性：烘焙后的
+ * 动作必然全链纯 FK。 */
+static int vmd_suspend_all_ik_after_bake(Main *bmain, Object *ob)
 {
+  if (ob->pose == nullptr) {
+    return 0;
+  }
+  int suspended = 0;
+  for (bPoseChannel *pchan = static_cast<bPoseChannel *>(ob->pose->chanbase.first);
+       pchan != nullptr;
+       pchan = pchan->next)
+  {
+    for (bConstraint *con = static_cast<bConstraint *>(pchan->constraints.first);
+         con != nullptr;
+         con = con->next)
+    {
+      if (strcmp(con->name, "MMD_IK_Approx") != 0 && strcmp(con->name, "MMD_IK_Limit") != 0) {
+        continue;
+      }
+      if (con->enforce != 0.0f) {
+        con->enforce = 0.0f;
+        suspended++;
+      }
+    }
+  }
+
+  /* 原生 CCD V8/V2 一并禁用。 */
+  io::pmx::PMXBoneIKDefinitionSet ik_def;
+  if (io::pmx::read_bone_ik_definition(ob->id, ik_def)) {
+    bArmature *arm = id_cast<bArmature *>(ob->data);
+    if (arm != nullptr) {
+      for (const io::pmx::PMXBoneIKDefinition &def : ik_def.ik_bones) {
+        Bone *ik_bone = BKE_armature_find_bone_name(arm, def.bone_name.c_str());
+        if (ik_bone != nullptr) {
+          mmd::mmd_native_ik_set_enabled(*ik_bone, false);
+        }
+      }
+    }
+  }
+
+  if (suspended > 0) {
+    DEG_id_tag_update_ex(bmain, &ob->id, ID_RECALC_GEOMETRY | ID_RECALC_TRANSFORM);
+    DEG_relations_tag_update(bmain);
+  }
+  return suspended;
+}
+
+static bool vmd_is_rigify_bridge_armature(const Object &object){
   if (object.type != OB_ARMATURE) {
     return false;
   }
@@ -848,9 +896,10 @@ wmOperatorStatus wm_vmd_import_exec(bContext *C, wmOperator *op)
                   BLI_findstring(&bmain->actions, bake_name.c_str(), offsetof(ID, name) + 2));
               if (baked != nullptr) {
                 animrig::assign_action(baked, target->id);
-                /* 烘焙出的 FK 曲线覆盖所有链骨 → 全部链视为纯 FK，挂起所有
-                 * MMD 近似 IK 约束，避免在已解算曲线上二次求解。 */
-                vmd_suspend_mmd_approx_constraints(bmain, target);
+                /* 烘焙出的 FK 曲线覆盖所有链骨 → 无条件挂起全部 MMD 近似
+                 * IK 约束与原生 CCD（见 vmd_suspend_all_ik_after_bake），
+                 * 避免 iTaSC 把腿解向静止的 足IK 目标（"腿找原点"）。 */
+                vmd_suspend_all_ik_after_bake(bmain, target);
                 BKE_reportf(op->reports,
                             RPT_INFO,
                             "GPU bake complete: '%s' assigned to '%s'",

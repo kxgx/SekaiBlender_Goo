@@ -121,14 +121,26 @@ class SEKAI_OT_gpu_render(Operator):
         res = gpu_auto_setup()
         old_engine = scene.render.engine
         old_device = scene.cycles.device if scene.render.engine == "CYCLES" else ""
+        # 有场景摄像机时按摄像机渲染（避免渲染视口当前视角，例如放大到腿部的
+        # 视角会渲染出"满屏腿"）；没有摄像机才回退视口渲染。
+        use_camera = scene.camera is not None
         try:
             if self.use_cycles and res is not None and scene.render.engine != "CYCLES":
                 scene.render.engine = "CYCLES"
             if scene.render.engine == "CYCLES" and res is not None:
                 scene.cycles.device = "GPU"
             bpy.ops.render.render(
-                "INVOKE_DEFAULT", animation=self.animation, use_viewport=True, write_still=True
+                "INVOKE_DEFAULT",
+                animation=self.animation,
+                use_viewport=not use_camera,
+                use_camera=use_camera,
+                write_still=True,
             )
+            if not use_camera:
+                self.report(
+                    {"INFO"},
+                    "场景没有摄像机，已按视口渲染；导入 VMD 摄像机或添加摄像机后按场景相机渲染",
+                )
         finally:
             if scene.render.engine != old_engine:
                 scene.render.engine = old_engine
