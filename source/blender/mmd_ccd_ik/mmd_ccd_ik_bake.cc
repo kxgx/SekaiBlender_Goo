@@ -90,7 +90,7 @@ bool mmd_ccd_bake_gpu(MmdCCDBakeBuffers &buffers, std::vector<float> &r_q_curren
       DRW_gpu_context_enable();
     }
     if (GPU_context_active_get() == nullptr) {
-      std::fprintf(stderr, "[BAKEDBG] context still null after enable\n");
+      std::fprintf(stderr, "[BAKETIME] GPU context still null after enable\n");
       return false;
     }
   }
@@ -285,15 +285,8 @@ bool mmd_ccd_bake_gpu(MmdCCDBakeBuffers &buffers, std::vector<float> &r_q_curren
                frame_count,
                frame_upload_ms);
 
-  /* 调试缓冲：链数据 + iter0 追踪（仅 frame 0 写入）。 */
-  const int dbg_chain_count = int(buffers.chains.size());
-  const int dbg_float_count = dbg_chain_count * 6 + dbg_chain_count * 4 * 32;
-  std::vector<float> dbg_buf_data(dbg_float_count, -777.0f);
-  gpu::StorageBuf *dbg_buf = GPU_storagebuf_create_ex(
-      sizeof(float) * dbg_float_count, dbg_buf_data.data(), GPU_USAGE_STATIC, "mmd_bake_dbg");
-
   if (bone_buf == nullptr || chain_buf == nullptr || link_buf == nullptr || frame_buf == nullptr ||
-      out_buf == nullptr || dbg_buf == nullptr)
+      out_buf == nullptr)
   {
     /* 常量缓冲创建失败时同步失效缓存，避免悬垂指针。 */
     g_bake_cache.bone_buf = bone_buf;
@@ -304,7 +297,6 @@ bool mmd_ccd_bake_gpu(MmdCCDBakeBuffers &buffers, std::vector<float> &r_q_curren
     GPU_storagebuf_free(link_buf);
     GPU_storagebuf_free(frame_buf);
     GPU_storagebuf_free(out_buf);
-    GPU_storagebuf_free(dbg_buf);
     return false;
   }
 
@@ -313,22 +305,12 @@ bool mmd_ccd_bake_gpu(MmdCCDBakeBuffers &buffers, std::vector<float> &r_q_curren
   const int link_binding = GPU_shader_get_ssbo_binding(shader, "link_const_buf");
   const int frame_binding = GPU_shader_get_ssbo_binding(shader, "frame_buf");
   const int out_binding = GPU_shader_get_ssbo_binding(shader, "frame_out_buf");
-  const int dbg_binding = GPU_shader_get_ssbo_binding(shader, "debug_buf");
-  std::fprintf(stderr,
-               "[BAKEDBG] bindings bone=%d chain=%d link=%d frame=%d out=%d dbg=%d\n",
-               bone_binding,
-               chain_binding,
-               link_binding,
-               frame_binding,
-               out_binding,
-               dbg_binding);
 
   GPU_storagebuf_bind(bone_buf, bone_binding);
   GPU_storagebuf_bind(chain_buf, chain_binding);
   GPU_storagebuf_bind(link_buf, link_binding);
   GPU_storagebuf_bind(frame_buf, frame_binding);
   GPU_storagebuf_bind(out_buf, out_binding);
-  GPU_storagebuf_bind(dbg_buf, dbg_binding);
 
   GPU_shader_bind(shader);
   GPU_shader_uniform_1i(shader, "bone_count", bone_count);
@@ -353,80 +335,14 @@ bool mmd_ccd_bake_gpu(MmdCCDBakeBuffers &buffers, std::vector<float> &r_q_curren
                dispatch_ms,
                readback_ms);
 
-  /* 验证 frame_buf 上传数据完好性（bone 32/436 的 q_base 与 m0）。 */
-  {
-    std::vector<GPUFrameBone> fb_check(frame_data_count);
-    GPU_storagebuf_read(frame_buf, fb_check.data());
-    std::fprintf(stderr,
-                 "[BAKEDBG] frame_buf[32]  q_base=(%g,%g,%g,%g) m0_00=(%g,%g,%g,%g)\n",
-                 fb_check[32].q_base[0],
-                 fb_check[32].q_base[1],
-                 fb_check[32].q_base[2],
-                 fb_check[32].q_base[3],
-                 fb_check[32].m0_row0[0],
-                 fb_check[32].m0_row0[1],
-                 fb_check[32].m0_row0[2],
-                 fb_check[32].m0_row0[3]);
-    std::fprintf(stderr,
-                 "[BAKEDBG] frame_buf[436] q_base=(%g,%g,%g,%g) m0_00=(%g,%g,%g,%g)\n",
-                 fb_check[436].q_base[0],
-                 fb_check[436].q_base[1],
-                 fb_check[436].q_base[2],
-                 fb_check[436].q_base[3],
-                 fb_check[436].m0_row0[0],
-                 fb_check[436].m0_row0[1],
-                 fb_check[436].m0_row0[2],
-                 fb_check[436].m0_row0[3]);
-  }
-
-  /* 读回调试数据并打印。 */
-  GPU_storagebuf_read(dbg_buf, dbg_buf_data.data());
-  std::fprintf(stderr, "[BAKEDBG] chain data on GPU:\n");
-  for (int c = 0; c < dbg_chain_count; c++) {
-    std::fprintf(stderr,
-                 "[BAKEDBG]   c%d target %.0f effector %.0f offset %.0f count %.0f iter %.0f angle %.6f\n",
-                 c,
-                 dbg_buf_data[c * 6 + 0],
-                 dbg_buf_data[c * 6 + 1],
-                 dbg_buf_data[c * 6 + 2],
-                 dbg_buf_data[c * 6 + 3],
-                 dbg_buf_data[c * 6 + 4],
-                 dbg_buf_data[c * 6 + 5]);
-  }
-  for (int c = 0; c < dbg_chain_count; c++) {
-    for (int o = 0; o < 4; o++) {
-      const float *d = dbg_buf_data.data() + dbg_chain_count * 6 + (c * 4 + o) * 32;
-      if (d[18] < -100.0f) {
-        continue; /* 未写入 */
-      }
-      std::fprintf(stderr,
-                   "[BAKEDBG]   c%d o%d joint(%+.5f,%+.5f,%+.5f) eff(%+.5f,%+.5f,%+.5f) tgt(%+.5f,%+.5f,%+.5f) "
-                   "axis_w(%+.5f,%+.5f,%+.5f) cl(%+.5f,%+.5f,%+.5f) axis_l(%+.5f,%+.5f,%+.5f) "
-                   "cos %.6f half %.6f delta(%+.5f,%+.5f,%+.5f,%+.5f) q(%+.5f,%+.5f,%+.5f,%+.5f)\n",
-                   c,
-                   o,
-                   d[0], d[1], d[2],
-                   d[3], d[4], d[5],
-                   d[6], d[7], d[8],
-                   d[9], d[10], d[11],
-                   d[12], d[13], d[14],
-                   d[15], d[16], d[17],
-                   d[18], d[19],
-                   d[20], d[21], d[22], d[23],
-                   d[24], d[25], d[26], d[27]);
-    }
-  }
-
   GPU_storagebuf_unbind(bone_buf);
   GPU_storagebuf_unbind(chain_buf);
   GPU_storagebuf_unbind(link_buf);
   GPU_storagebuf_unbind(frame_buf);
   GPU_storagebuf_unbind(out_buf);
-  GPU_storagebuf_unbind(dbg_buf);
   /* 常量缓冲与着色器保留在缓存中复用；仅释放每调用资源。 */
   GPU_storagebuf_free(frame_buf);
   GPU_storagebuf_free(out_buf);
-  GPU_storagebuf_free(dbg_buf);
   GPU_shader_unbind();
 
   if (temp_context) {

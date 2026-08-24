@@ -114,11 +114,6 @@ void mul3_rows(float3 a0, float3 a1, float3 a2, float3 b0, float3 b1, float3 b2,
 /* 帧内骨数据读取 helper（m0 以 4 行 float4 存储于 frame_buf，就地更新）  */
 /* -------------------------------------------------------------------- */
 
-int frame_index_base(int frame)
-{
-  return frame * bone_count;
-}
-
 void frame_get_m0(int idx, out float3 m0, out float3 m1, out float3 m2, out float3 m3)
 {
   MmdBakeFrameBone d = frame_buf[idx];
@@ -313,17 +308,10 @@ float4 apply_mmd_link_limit(float3 limit_min,
   return quat_from_row3(c0, c1, c2);
 }
 
-/* 调试输出（仅 frame 0）：
- * debug_buf[0 .. chain_count*6): 链数据 target/effector/offset/count/iterations/angle
- * debug_buf[chain_count*6 + (c*4+o)*32 .. +32): iter0 追踪
- *   joint(3) eff(3) target(3) axis_w(3) cl(3) axis_l(3) cosine(1) half(1)
- *   delta(4) q_cur(4) */
-int dbg_frame = -1;
-
 /* 单链求解（与 solve_chain_v8 逐行对应）                              */
 /* -------------------------------------------------------------------- */
 
-void solve_chain_v8(MmdBakeChainConst chain, int frame_base, int chain_index, int out_frame_base)
+void solve_chain_v8(MmdBakeChainConst chain, int frame_base, int out_frame_base)
 {
   int target_idx = chain.target_bone_index;
   int effector_idx = chain.effector_bone_index;
@@ -427,38 +415,6 @@ void solve_chain_v8(MmdBakeChainConst chain, int frame_base, int chain_index, in
 
       frame_out_buf[out_frame_base + out_idx].q_current_mmd = q_cur;
 
-      if (dbg_frame == 0 && iteration_index == 0) {
-        int dbg_base = chain_count * 6 + (chain_index * 4 + runtime_order) * 32;
-        debug_buf[dbg_base + 0] = joint.x;
-        debug_buf[dbg_base + 1] = joint.y;
-        debug_buf[dbg_base + 2] = joint.z;
-        debug_buf[dbg_base + 3] = effector.x;
-        debug_buf[dbg_base + 4] = effector.y;
-        debug_buf[dbg_base + 5] = effector.z;
-        debug_buf[dbg_base + 6] = target.x;
-        debug_buf[dbg_base + 7] = target.y;
-        debug_buf[dbg_base + 8] = target.z;
-        debug_buf[dbg_base + 9] = axis_world.x;
-        debug_buf[dbg_base + 10] = axis_world.y;
-        debug_buf[dbg_base + 11] = axis_world.z;
-        debug_buf[dbg_base + 12] = cl.x;
-        debug_buf[dbg_base + 13] = cl.y;
-        debug_buf[dbg_base + 14] = cl.z;
-        debug_buf[dbg_base + 15] = axis_local.x;
-        debug_buf[dbg_base + 16] = axis_local.y;
-        debug_buf[dbg_base + 17] = axis_local.z;
-        debug_buf[dbg_base + 18] = cosine;
-        debug_buf[dbg_base + 19] = half_angle;
-        debug_buf[dbg_base + 20] = delta.x;
-        debug_buf[dbg_base + 21] = delta.y;
-        debug_buf[dbg_base + 22] = delta.z;
-        debug_buf[dbg_base + 23] = delta.w;
-        debug_buf[dbg_base + 24] = q_cur.x;
-        debug_buf[dbg_base + 25] = q_cur.y;
-        debug_buf[dbg_base + 26] = q_cur.z;
-        debug_buf[dbg_base + 27] = q_cur.w;
-      }
-
       /* 刷新 links[0..current] 反向 + effector 折叠到 links[0] */
       for (int refresh_index = runtime_order; refresh_index >= 0; refresh_index--) {
         MmdBakeLinkConst rlink = link_const_buf[chain.link_offset + refresh_index];
@@ -497,18 +453,6 @@ void main()
     return;
   }
   int frame_base = int(frame) * bone_count;
-  dbg_frame = int(frame);
-
-  if (frame == 0u) {
-    for (int c = 0; c < chain_count; c++) {
-      debug_buf[c * 6 + 0] = float(chain_const_buf[c].target_bone_index);
-      debug_buf[c * 6 + 1] = float(chain_const_buf[c].effector_bone_index);
-      debug_buf[c * 6 + 2] = float(chain_const_buf[c].link_offset);
-      debug_buf[c * 6 + 3] = float(chain_const_buf[c].link_count);
-      debug_buf[c * 6 + 4] = float(chain_const_buf[c].iterations);
-      debug_buf[c * 6 + 5] = chain_const_buf[c].runtime_angle;
-    }
-  }
 
   /* 1. q_current 初始 identity（仅链骨有紧凑输出槽位） */
   int out_frame_base = int(frame) * link_count;
@@ -558,6 +502,6 @@ void main()
 
   /* 3. 按顺序求解每条链 */
   for (int c = 0; c < chain_count; c++) {
-    solve_chain_v8(chain_const_buf[c], frame_base, c, out_frame_base);
+    solve_chain_v8(chain_const_buf[c], frame_base, out_frame_base);
   }
 }
