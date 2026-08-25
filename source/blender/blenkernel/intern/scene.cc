@@ -232,7 +232,9 @@ static void scene_init_data(ID *id)
     pset->brush[PE_BRUSH_CUT].strength = 1.0f;
   }
 
-  STRNCPY_UTF8(scene->r.engine, RE_engine_id_BLENDER_EEVEE);
+  /* 默认渲染引擎：Goo Engine（EEVEE Next 管线的 GPU 引擎，SetDepth 等 goo
+   * 特性开箱即用）。 */
+  STRNCPY_UTF8(scene->r.engine, RE_engine_id_BLENDER_GOOENGINE);
 
   STRNCPY(scene->r.pic, U.renderdir);
 

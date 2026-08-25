@@ -47,6 +47,7 @@
 #include "BKE_action.hh"
 #include "BKE_anim_data.hh"
 #include "BKE_blender.hh"
+#include "BLI_fileops.hh"
 #include "BKE_armature.hh"
 #include "BKE_collection.hh"
 #include "BKE_context.hh"
@@ -69,6 +70,7 @@
 #include "BLI_vector.hh"
 
 #include "DEG_depsgraph.hh"
+#include "DEG_depsgraph_query.hh"
 
 #include "ED_screen.hh"
 
@@ -1394,10 +1396,17 @@ std::unique_ptr<MMDPhysicsRuntimeSession> create_runtime_session(
   /* Pose Mode edits are intentional user input even when they are not keyed.
    * Do not replace them with the import-time PMX snapshot before building the
    * new world. Object-mode restarts keep the legacy stale-pose cleanup. */
-  const int restored_physics_bones = (armature.mode & OB_MODE_POSE) == 0 ?
-                                         restore_unanimated_physics_bones(
-                                             armature, session->binding.physics_bone_names) :
-                                         0;
+  const int restored_physics_bones =
+      std::getenv("MMD_NO_RESTORE_UNANIM") != nullptr ?
+          0 :
+          ((armature.mode & OB_MODE_POSE) == 0 ?
+               restore_unanimated_physics_bones(
+                   armature, session->binding.physics_bone_names) :
+               0);
+  if (restored_physics_bones > 0) {
+    std::fprintf(stderr, "[MMD Physics] restored %d unanimated physics bones\n",
+                 restored_physics_bones);
+  }
   if (restored_physics_bones > 0) {
     Depsgraph *depsgraph = CTX_data_depsgraph_pointer(C);
     if (depsgraph != nullptr) {
@@ -1609,6 +1618,9 @@ bool refresh_current_physics_frame(bContext *C, Object &armature)
    * world gets a chance to read them. Object Mode has no such edit buffer, so
    * force the current frame to be evaluated before initializing bodies. */
   if ((armature.mode & OB_MODE_POSE) != 0) {
+    return true;
+  }
+  if (std::getenv("MMD_NO_REFRESH_EVAL") != nullptr) {
     return true;
   }
   DEG_id_tag_update(&armature.id, ID_RECALC_ANIMATION | ID_RECALC_GEOMETRY);
@@ -1873,10 +1885,18 @@ PhysicsStartupResult prepare_world_for_simulation(MMDPhysicsRuntimeSession &sess
   Object &armature = *session.armature;
   PhysicsStartupResult result;
   /* Snapshot the evaluated VMD pose before muting its physics-bone curves. */
-  result.muted_constraints = world.mute_physics_bone_constraints();
-  result.muted_action_curves = mute_physics_bone_action_curves(session, armature);
-  result.disconnected_bones = world.disconnect_physics_bones();
-  world.temporal_kinematic_init();
+  result.muted_constraints = std::getenv("MMD_NO_MUTE_CON") != nullptr ?
+                                 0 :
+                                 world.mute_physics_bone_constraints();
+  result.muted_action_curves = std::getenv("MMD_NO_MUTE_CURVES") != nullptr ?
+                                   0 :
+                                   mute_physics_bone_action_curves(session, armature);
+  result.disconnected_bones = std::getenv("MMD_NO_DISCONNECT") != nullptr ?
+                                  0 :
+                                  world.disconnect_physics_bones();
+  if (std::getenv("MMD_NO_TEMPORAL") == nullptr) {
+    world.temporal_kinematic_init();
+  }
   /* Gradually interpolate kinematic (STATIC) bodies from PMX rest pose to the
    * current VMD pose over 30 frames, letting dynamic bodies free-simulate
    * while the spring delta builds up smoothly. Without this, the one-tick
@@ -1884,7 +1904,9 @@ PhysicsStartupResult prepare_world_for_simulation(MMDPhysicsRuntimeSession &sess
    * ("颤动") on cape/hair chains. Mirrors MikuMikuPhysics's
    * `_sync_to_start_pose` (physics_world.py:1328-1353). */
   constexpr int kStartupSyncSteps = 30;
-  world.startup_sync(kStartupSyncSteps);
+  if (std::getenv("MMD_NO_STARTUP_SYNC") == nullptr) {
+    world.startup_sync(kStartupSyncSteps);
+  }
   /* Prewarm lets springs settle toward equilibrium before the first real
    * Timer tick. Without it, dynamic bodies start at the VMD pose but with
    * zero velocity, and the first few ticks produce a transient drop as
@@ -2385,7 +2407,11 @@ wmOperatorStatus physics_step_exec(bContext *C, wmOperator *op)
     }
     prepare_world_for_simulation(*session);
   }
-  const int written = world->step_full(kDefaultTimerInterval, kDefaultMaxSubsteps, true);
+  const bool apply_results = std::getenv("MMD_NO_WRITEBACK") == nullptr;
+  int written = 0;
+  if (std::getenv("MMD_NO_STEP") == nullptr) {
+    written = world->step_full(kDefaultTimerInterval, kDefaultMaxSubsteps, apply_results);
+  }
   Depsgraph *depsgraph = CTX_data_depsgraph_pointer(C);
   world->flush_depsgraph(depsgraph);
   const auto &perf = world->performance();
@@ -2504,6 +2530,51 @@ void physics_bake_restore_pose(Object &armature,
   if (update_depsgraph) {
     DEG_id_tag_update(&armature.id, ID_RECALC_GEOMETRY);
   }
+}
+
+/* MMD_PHYSBAKE_TRACE 模态烘焙逐帧打印腿骨求值姿态（定位"烘焙中腿漂移"）。
+ * 值 "1" 时输出到 stderr；值为文件路径时以追加方式写入该文件（GUI 下可用）。 */
+static void physics_bake_trace_legs(const char *tag,
+                                    Depsgraph *depsgraph,
+                                    Object &armature,
+                                    const int frame)
+{
+  const char *trace_spec = std::getenv("MMD_PHYSBAKE_TRACE");
+  if (trace_spec == nullptr || trace_spec[0] == '\0' || depsgraph == nullptr) {
+    return;
+  }
+  BKE_scene_graph_update_for_newframe(depsgraph);
+  Object *arm_eval = DEG_get_evaluated(depsgraph, &armature);
+  if (arm_eval == nullptr || arm_eval->pose == nullptr) {
+    return;
+  }
+  static FILE *trace_file = nullptr;
+  static std::string trace_path;
+  FILE *out = stderr;
+  if (std::strcmp(trace_spec, "1") != 0) {
+    if (trace_file == nullptr || trace_path != trace_spec) {
+      if (trace_file != nullptr) {
+        std::fclose(trace_file);
+      }
+      trace_file = BLI_fopen(trace_spec, "a");
+      trace_path = trace_spec;
+    }
+    out = trace_file != nullptr ? trace_file : stderr;
+  }
+  std::fprintf(out, "[PHYSBAKE] %s frame=%d", tag, frame);
+  for (const char *bn : {"左ひざ", "右ひざ", "左足首", "右足首", "左足ＩＫ", "右足ＩＫ"}) {
+    bPoseChannel *pchan = BKE_pose_channel_find_name(arm_eval->pose, bn);
+    if (pchan != nullptr) {
+      std::fprintf(out,
+                   " %s(%.3f,%.3f,%.3f)",
+                   bn,
+                   pchan->pose_mat[3][0],
+                   pchan->pose_mat[3][1],
+                   pchan->pose_mat[3][2]);
+    }
+  }
+  std::fprintf(out, "\n");
+  fflush(out);
 }
 
 IDProperty *physics_bake_provenance(const bAction &action)
@@ -3417,6 +3488,7 @@ bool physics_bake_modal_initialize(bContext *C, wmOperator *op, PhysicsBakeModal
   prepare_world_for_simulation(*data.session);
   world->apply_dynamic_to_pose();
   world->flush_depsgraph(data.depsgraph);
+  physics_bake_trace_legs("STARTUP", data.depsgraph, *data.armature, data.frame_start);
 
   /* R10：预热沉降（与同步路径一致）。 */
   for (int w = 0; w < kPhysicsBakeWarmupFrames; w++) {
@@ -3550,6 +3622,12 @@ wmOperatorStatus physics_bake_modal(bContext *C, wmOperator *op, const wmEvent *
                        data->fixed_steps_per_frame);
       world->apply_dynamic_to_pose();
       world->flush_depsgraph(data->depsgraph);
+      /* 诊断追踪：前 16 帧全打印 + 之后每 100 帧一次。 */
+      if (std::getenv("MMD_PHYSBAKE_TRACE") != nullptr &&
+          (data->next_frame <= data->frame_start + 15 || data->next_frame % 100 == 0))
+      {
+        physics_bake_trace_legs("SAMPLED", data->depsgraph, *data->armature, data->next_frame);
+      }
       capture_physics_bake_frame(*data->armature, data->tracks);
       physics_bake_capture_pose(*data->armature, data->sampling_resume_pose);
       data->bake_total_fixed_steps += uint64_t(data->fixed_steps_per_frame);

@@ -393,7 +393,14 @@ static bool is_cartesian_constraint(bConstraint * /*con*/)
  * MMD_IK_Approx is a Blender/iTaSC fallback for PMX IK. Once the native CCD
  * evaluator is enabled for the corresponding persisted PMX IK definition, the
  * fallback must not enter the iTaSC tree at all: the two solvers otherwise
- * write the same pose channels in the same evaluation cycle. */
+ * write the same pose channels in the same evaluation cycle.
+ *
+ * mmd_tools 对齐：是否"原生独占"由 IK 控制骨的 mmd_native_ik_enabled 标志
+ * 决定——VMD 导入会禁用原生 CCD（mmd_native_ik_set_enabled(false)），此时
+ * MMD_IK_Approx 必须进入 iTaSC 求解树，由 iTaSC 逐帧把腿链解向 IK 控制骨
+ * （与 Blender 5.0 的 mmd_tools 行为一致）。此前 v8 默认开启时无条件返回
+ * true，iTaSC 从不求解，导致模型没有原生求解时腿链僵在绑定姿态
+ * （"腿找原点"）。 */
 static bool is_native_mmd_ik_approx(Object &ob,
                                      bPoseChannel &pchan_tip,
                                      bConstraint &con)
@@ -406,9 +413,6 @@ static bool is_native_mmd_ik_approx(Object &ob,
   const bool use_legacy = legacy != nullptr && std::strcmp(legacy, "1") == 0;
   const char *v8 = BLI_getenv("MMD_CCD_V8");
   const bool use_v8 = !use_legacy && (v8 == nullptr || std::strcmp(v8, "0") != 0);
-  if (use_v8) {
-    return true;
-  }
 
   IDProperty *definition = IDP_GetPropertyFromGroup_null(
       ob.id.system_properties, "mmd_pmx_bone_ik_definition");
@@ -458,18 +462,27 @@ static bool is_native_mmd_ik_approx(Object &ob,
       continue;
     }
 
-    if (!use_legacy) {
-      return true;
-    }
-
+    /* The chain is native-exclusive only while its native CCD is enabled.
+     * The flag defaults to enabled (missing property == legacy native mode);
+     * VMD playback disables it so the iTaSC approximation takes over. */
     Bone *ik_bone = BKE_armature_find_bone_name(arm, IDP_string_get(name_prop));
     if (ik_bone == nullptr || ik_bone->system_properties == nullptr) {
+      if (std::getenv("MMD_ITASC_TRACE") != nullptr) {
+        std::fprintf(stderr, "[iTaSC] MMD_IK_Approx bone=%s ik=%s: native default-on -> excluded\n",
+                     pchan_tip.name, IDP_string_get(name_prop));
+      }
       return true;
     }
     IDProperty *native_prop = IDP_GetPropertyFromGroup_null(
         ik_bone->system_properties, "mmd_native_ik_enabled");
-    return native_prop == nullptr ||
-           (native_prop->type == IDP_BOOLEAN && IDP_bool_get(native_prop) != 0);
+    const bool native_on = native_prop == nullptr ||
+                           (native_prop->type == IDP_BOOLEAN && IDP_bool_get(native_prop) != 0);
+    if (std::getenv("MMD_ITASC_TRACE") != nullptr) {
+      std::fprintf(stderr, "[iTaSC] MMD_IK_Approx bone=%s ik=%s native=%d -> %s\n",
+                   pchan_tip.name, IDP_string_get(name_prop), int(native_on),
+                   native_on ? "excluded" : "ENTER TREE");
+    }
+    return native_on;
   }
   return false;
 }

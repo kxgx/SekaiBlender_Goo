@@ -18,7 +18,9 @@
 #include "DRW_engine.hh"
 
 #include "BLI_time.hh"
+#include "BLI_path_utils.hh"
 
+#include <cstdlib>
 #include <cstring>
 
 #ifdef WITH_MMD_BAKE_CUDA
@@ -27,11 +29,15 @@ extern "C" cudaError_t mmd_ccd_bake_launch(const blender::mmd::bake::BoneConst *
                                            const blender::mmd::bake::ChainConst *chains,
                                            const blender::mmd::bake::LinkConst *links,
                                            blender::mmd::bake::FrameBone *frames,
+                                           void *m0_cache,
+                                           void *q_cache,
                                            blender::mmd::bake::FrameOut *out,
                                            int bone_count,
                                            int chain_count,
                                            int frame_count,
-                                           int link_count);
+                                           int link_count,
+                                           cudaStream_t stream,
+                                           int use_fp64);
 #endif
 
 namespace blender::mmd {
@@ -253,45 +259,134 @@ static bool mmd_ccd_bake_gpu_cuda(MmdCCDBakeBuffers &buffers,
     g_cuda_cache.link_bytes = bytes_of(gpu_links.data(),
                                        sizeof(GPULinkConst) * gpu_links.size());
   }
+  const double const_ms = (BLI_time_now_seconds() - t_cuda0) * 1000.0;
 
-  void *frame_ptr = nullptr;
-  void *out_ptr = nullptr;
-  MMD_CUDA_CHECK(cudaMalloc(&frame_ptr, sizeof(GPUFrameBone) * gpu_frames.size()));
-  MMD_CUDA_CHECK(cudaMemcpy(
-      frame_ptr, gpu_frames.data(), sizeof(GPUFrameBone) * gpu_frames.size(),
-      cudaMemcpyHostToDevice));
-  MMD_CUDA_CHECK(cudaMalloc(&out_ptr, sizeof(GPUFrameOut) * gpu_out.size()));
-  MMD_CUDA_CHECK(cudaMemcpy(
-      out_ptr, gpu_out.data(), sizeof(GPUFrameOut) * gpu_out.size(), cudaMemcpyHostToDevice));
-  const double upload_ms = (BLI_time_now_seconds() - t_cuda0) * 1000.0;
+  /* 并行加速：帧块切分为多个 CUDA 流，每流异步 H2D 上传 → 启动内核 →
+   * D2H 回读，流间流水线重叠（上传/计算/回读并发），GPU 利用率拉满。
+   * MMD_BAKE_STREAMS=1..4（默认 2）；小任务（帧数 < 流数×64）自动单流。
+   * 双精度：MMD_BAKE_FP64=1 时内核全程 double（设备端独立 m0/q 缓存，
+   * 消费级卡 fp64 吞吐约为 fp32 的 1/64，速度相应下降，仅精度优先时开）。 */
+  const char *streams_env = BLI_getenv("MMD_BAKE_STREAMS");
+  int nstreams = streams_env != nullptr ? atoi(streams_env) : 2;
+  nstreams = std::max(1, std::min(4, nstreams));
+  if (frame_count < nstreams * 64) {
+    nstreams = 1;
+  }
+  const bool use_fp64 = BLI_getenv("MMD_BAKE_FP64") != nullptr;
 
-  const double t_launch0 = BLI_time_now_seconds();
-  MMD_CUDA_CHECK(mmd_ccd_bake_launch(static_cast<const bake::BoneConst *>(g_cuda_cache.bone_ptr),
-                                     static_cast<const bake::ChainConst *>(g_cuda_cache.chain_ptr),
-                                     static_cast<const bake::LinkConst *>(g_cuda_cache.link_ptr),
-                                     static_cast<bake::FrameBone *>(frame_ptr),
-                                     static_cast<bake::FrameOut *>(out_ptr),
-                                     bone_count,
-                                     int(buffers.chains.size()),
-                                     frame_count,
-                                     int(link_count)));
-  MMD_CUDA_CHECK(cudaDeviceSynchronize());
-  const double launch_ms = (BLI_time_now_seconds() - t_launch0) * 1000.0;
+  struct Chunk {
+    int start;
+    int count;
+  };
+  Chunk chunks[4] = {};
+  {
+    const int per = frame_count / nstreams;
+    const int rem = frame_count % nstreams;
+    int pos = 0;
+    for (int i = 0; i < nstreams; i++) {
+      chunks[i].start = pos;
+      chunks[i].count = per + (i < rem ? 1 : 0);
+      pos += chunks[i].count;
+    }
+  }
 
-  const double t_readback0 = BLI_time_now_seconds();
-  MMD_CUDA_CHECK(cudaMemcpy(
-      gpu_out.data(), out_ptr, sizeof(GPUFrameOut) * gpu_out.size(), cudaMemcpyDeviceToHost));
-  const double readback_ms = (BLI_time_now_seconds() - t_readback0) * 1000.0;
-  cudaFree(frame_ptr);
-  cudaFree(out_ptr);
+  cudaStream_t streams[4] = {nullptr, nullptr, nullptr, nullptr};
+  void *frame_ptr[4] = {nullptr, nullptr, nullptr, nullptr};
+  void *out_ptr[4] = {nullptr, nullptr, nullptr, nullptr};
+  void *m0_ptr[4] = {nullptr, nullptr, nullptr, nullptr};
+  void *q_ptr[4] = {nullptr, nullptr, nullptr, nullptr};
+  const size_t bone_size = sizeof(GPUFrameBone);
+  const size_t out_size = sizeof(GPUFrameOut);
+  const size_t m0_size = sizeof(double) * 16; /* M0Row */
+  const size_t q_size = sizeof(double) * 4;   /* QRow */
+  for (int i = 0; i < nstreams; i++) {
+    const int count = chunks[i].count;
+    if (count <= 0) {
+      continue;
+    }
+    MMD_CUDA_CHECK(cudaStreamCreate(&streams[i]));
+    MMD_CUDA_CHECK(cudaMalloc(&frame_ptr[i], bone_size * size_t(count) * bone_count));
+    MMD_CUDA_CHECK(cudaMalloc(&out_ptr[i], out_size * size_t(count) * link_count));
+    if (use_fp64) {
+      MMD_CUDA_CHECK(cudaMalloc(&m0_ptr[i], m0_size * size_t(count) * bone_count));
+      MMD_CUDA_CHECK(cudaMalloc(&q_ptr[i], q_size * size_t(count) * link_count));
+    }
+  }
+
+  const double t_async0 = BLI_time_now_seconds();
+  for (int i = 0; i < nstreams; i++) {
+    const int count = chunks[i].count;
+    if (count <= 0) {
+      continue;
+    }
+    const size_t frame_off = size_t(chunks[i].start) * bone_count;
+    const size_t out_off = size_t(chunks[i].start) * link_count;
+    MMD_CUDA_CHECK(cudaMemcpyAsync(frame_ptr[i],
+                                   gpu_frames.data() + frame_off,
+                                   bone_size * size_t(count) * bone_count,
+                                   cudaMemcpyHostToDevice,
+                                   streams[i]));
+    MMD_CUDA_CHECK(cudaMemcpyAsync(out_ptr[i],
+                                   gpu_out.data() + out_off,
+                                   out_size * size_t(count) * link_count,
+                                   cudaMemcpyHostToDevice,
+                                   streams[i]));
+    MMD_CUDA_CHECK(mmd_ccd_bake_launch(static_cast<const bake::BoneConst *>(g_cuda_cache.bone_ptr),
+                                       static_cast<const bake::ChainConst *>(g_cuda_cache.chain_ptr),
+                                       static_cast<const bake::LinkConst *>(g_cuda_cache.link_ptr),
+                                       static_cast<bake::FrameBone *>(frame_ptr[i]),
+                                       m0_ptr[i],
+                                       q_ptr[i],
+                                       static_cast<bake::FrameOut *>(out_ptr[i]),
+                                       bone_count,
+                                       int(buffers.chains.size()),
+                                       count,
+                                       int(link_count),
+                                       streams[i],
+                                       use_fp64 ? 1 : 0));
+    MMD_CUDA_CHECK(cudaMemcpyAsync(gpu_out.data() + out_off,
+                                   out_ptr[i],
+                                   out_size * size_t(count) * link_count,
+                                   cudaMemcpyDeviceToHost,
+                                   streams[i]));
+  }
+  for (int i = 0; i < nstreams; i++) {
+    if (streams[i] != nullptr) {
+      MMD_CUDA_CHECK(cudaStreamSynchronize(streams[i]));
+    }
+  }
+  const double gpu_total_ms = (BLI_time_now_seconds() - t_async0) * 1000.0;
+
+  for (int i = 0; i < nstreams; i++) {
+    if (frame_ptr[i] != nullptr) {
+      cudaFree(frame_ptr[i]);
+    }
+    if (out_ptr[i] != nullptr) {
+      cudaFree(out_ptr[i]);
+    }
+    if (m0_ptr[i] != nullptr) {
+      cudaFree(m0_ptr[i]);
+    }
+    if (q_ptr[i] != nullptr) {
+      cudaFree(q_ptr[i]);
+    }
+    if (streams[i] != nullptr) {
+      cudaStreamDestroy(streams[i]);
+    }
+  }
 
   std::fprintf(stderr,
-               "[BAKETIME] backend CUDA: upload %.1f ms, launch (%.2f ms), readback %.1f ms\n",
-               upload_ms,
-               launch_ms,
-               readback_ms);
+               "[BAKETIME] backend CUDA (%s, %d stream%s%s): const %.1f ms, "
+               "upload+launch+readback %.1f ms total\n",
+               use_fp64 ? "fp64" : "fp32",
+               nstreams,
+               nstreams > 1 ? "s" : "",
+               nstreams > 1 ? " pipelined" : "",
+               const_ms,
+               gpu_total_ms);
 
   mmd_bake_scatter_out(buffers, gpu_out, bone_count, frame_count, link_count, r_q_current);
+  g_bake_last_backend = use_fp64 ? "CUDA(fp64)" : "CUDA";
   return true;
 }
 
@@ -372,8 +467,9 @@ bool mmd_ccd_bake_gpu(MmdCCDBakeBuffers &buffers, std::vector<float> &r_q_curren
       dst.m0_row3[k] = src.m0[3][k];
     }
   }
-  /* q_current 初始为 identity（与 CPU 参照路径一致）。零四元数会在
-   * quat_normalize 的零保护下吞掉首轮 delta，导致与 CPU 结果发散。 */
+  /* q_current 主机侧预置为 identity（仅作保险：kernel 会在每个链骨槽位
+   * 上重写为 q_base）。零四元数会在 quat_normalize 的零保护下吞掉首轮
+   * delta；链骨槽位由 kernel 保证非零，非链骨槽位不进输出。 */
   for (size_t i = 0; i < out_data_count; i++) {
     gpu_out[i].q_current[0] = 1.0f;
     gpu_out[i].q_current[1] = 0.0f;
@@ -395,7 +491,7 @@ bool mmd_ccd_bake_gpu(MmdCCDBakeBuffers &buffers, std::vector<float> &r_q_curren
                               link_count,
                               r_q_current))
     {
-      g_bake_last_backend = "CUDA";
+      /* mmd_ccd_bake_gpu_cuda 已在内部设置精确后端标签（CUDA / CUDA(fp64)）。 */
       return true;
     }
     /* CUDA 调用失败 → 回退 Vulkan 路径。 */
@@ -565,6 +661,11 @@ bool mmd_ccd_bake_gpu(MmdCCDBakeBuffers &buffers, std::vector<float> &r_q_curren
 
   mmd_bake_scatter_out(buffers, gpu_out, bone_count, frame_count, link_count, r_q_current);
   g_bake_last_backend = "Vulkan";
+  if (BLI_getenv("MMD_BAKE_FP64") != nullptr) {
+    std::fprintf(stderr,
+                 "[BAKETIME] MMD_BAKE_FP64 ignored: Vulkan bake backend is fp32-only "
+                 "(CUDA backend required for fp64)\n");
+  }
   return true;
 }
 
@@ -577,6 +678,10 @@ void mmd_ccd_bake_cpu_reference(MmdCCDBakeBuffers &buffers, std::vector<float> &
   const int bone_count = int(buffers.bones.size());
   const int frame_count = buffers.frame_count;
   r_q_current.assign(size_t(frame_count) * size_t(bone_count) * 4, 0.0f);
+  /* 非链骨槽位保持 identity，与 GPU 散射路径一致（输出只用链骨槽位）。 */
+  for (size_t i = 0; i < r_q_current.size() / 4; i++) {
+    r_q_current[i * 4 + 0] = 1.0f;
+  }
 
   /* 构造 v8 链/骨结构（每帧独立求解，与 eval 路径一致）。 */
   std::vector<CCDIKV8Bone> bones(bone_count);
@@ -615,7 +720,9 @@ void mmd_ccd_bake_cpu_reference(MmdCCDBakeBuffers &buffers, std::vector<float> &
       const MmdCCDBakeBuffers::FrameBone &src = buffers.frames[size_t(f) * bone_count + i];
       for (int k = 0; k < 4; k++) {
         b.q_base_mmd[k] = src.q_base[k];
-        b.q_current_mmd[k] = (k == 0) ? 1.0f : 0.0f;
+        /* q_current 以 q_base 起步：求解器只在收敛的 link 上左乘 CCD delta，
+         * 未旋转的 link 保留 FK 姿态（旧语义 identity 会把链骨写成绑定姿态）。 */
+        b.q_current_mmd[k] = src.q_base[k];
       }
       for (int r = 0; r < 4; r++) {
         for (int c = 0; c < 4; c++) {
@@ -625,6 +732,11 @@ void mmd_ccd_bake_cpu_reference(MmdCCDBakeBuffers &buffers, std::vector<float> &
     }
     mmd_ccd_v8_solve_all_chains(chains.data(), int(chains.size()), bones.data(), bone_count);
     for (int i = 0; i < bone_count; i++) {
+      /* 仅链骨写求解结果；非链骨保持 identity（与 GPU 散射一致）。 */
+      const bool is_link = (buffers.bones[i].flags & 2) != 0;
+      if (!is_link) {
+        continue;
+      }
       for (int k = 0; k < 4; k++) {
         r_q_current[(size_t(f) * bone_count + i) * 4 + k] = bones[i].q_current_mmd[k];
       }

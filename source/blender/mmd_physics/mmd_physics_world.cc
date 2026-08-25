@@ -1886,6 +1886,14 @@ int MMDPhysicsWorld::apply_dynamic_to_pose()
     const btTransform bone_blender =
         body_blender * bone_offset_blender_[w.body_index].inverse();
 
+    if (std::getenv("MMD_IK_DEBUG_WRITES") != nullptr) {
+      std::fprintf(stderr,
+                   "[MMD Writeback] bone='%s' depth=%d type=%d\n",
+                   rt.blender_bone_name.c_str(),
+                   w.depth,
+                   int(rt.physics_type));
+    }
+
     update_pose_bone_matrix_basis_(
         pchan, bone_blender, applied_effective_blender, rt.physics_type);
 

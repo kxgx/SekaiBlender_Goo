@@ -41,7 +41,14 @@ namespace blender {
 
 /* ********************** THE IK SOLVER ******************* */
 
-static bool mmd_approximation_is_silent(Object *ob, const bConstraint &constraint)
+/* MMD_IK_Approx 是 PMX IK 的 Blender 解算回退。链的原生 CCD 开启时静音它，
+ * 避免两个求解器写同一批姿态通道；原生 CCD 被禁用（VMD 播放，见
+ * mmd_native_ik_set_enabled）时它必须进入 IK 求解树——mmd_tools 对齐。
+ * 判断依据是 pchan_tip 所属 IK 链的 IK 控制骨 mmd_native_ik_enabled 标志
+ * （缺省 = 原生开启）。 */
+static bool mmd_approximation_is_silent(Object *ob,
+                                        bPoseChannel &pchan_tip,
+                                        const bConstraint &constraint)
 {
   if (ob == nullptr || std::strcmp(constraint.name, "MMD_IK_Approx") != 0) {
     return false;
@@ -52,9 +59,6 @@ static bool mmd_approximation_is_silent(Object *ob, const bConstraint &constrain
   }
   const char *v8 = BLI_getenv("MMD_CCD_V8");
   const bool use_v8 = v8 == nullptr || std::strcmp(v8, "0") != 0;
-  if (use_v8) {
-    return true;
-  }
   if (!use_v8 && ob->adt != nullptr && ob->adt->action != nullptr) {
     return false;
   }
@@ -63,19 +67,68 @@ static bool mmd_approximation_is_silent(Object *ob, const bConstraint &constrain
   }
   IDProperty *definition = IDP_GetPropertyFromGroup_null(
       ob->id.system_properties, "mmd_pmx_bone_ik_definition");
-  IDProperty *schema = definition ?
-                           IDP_GetPropertyTypeFromGroup(definition, "schema_version", IDP_INT) :
-                           nullptr;
-  return schema != nullptr && IDP_int_get(schema) >= 2;
+  if (definition == nullptr) {
+    return false;
+  }
+  IDProperty *schema = IDP_GetPropertyTypeFromGroup(definition, "schema_version", IDP_INT);
+  if (schema == nullptr || IDP_int_get(schema) < 2) {
+    return false;
+  }
+
+  /* 找到 pchan_tip 所属的 IK 链，读取其 IK 控制骨的原生 CCD 开关。 */
+  IDProperty *ik_bones = IDP_GetPropertyTypeFromGroup(definition, "ik_bones", IDP_IDPARRAY);
+  if (ik_bones == nullptr) {
+    return true;
+  }
+  bArmature *arm = id_cast<bArmature *>(ob->data);
+  if (arm == nullptr) {
+    return true;
+  }
+  for (int i = 0; i < ik_bones->len; i++) {
+    IDProperty *item = IDP_GetIndexArray(ik_bones, i);
+    if (item == nullptr || item->type != IDP_GROUP) {
+      continue;
+    }
+    IDProperty *name_prop = IDP_GetPropertyTypeFromGroup(item, "name", IDP_STRING);
+    IDProperty *links = IDP_GetPropertyTypeFromGroup(item, "links", IDP_IDPARRAY);
+    if (name_prop == nullptr || links == nullptr) {
+      continue;
+    }
+    bool owns_pchan = false;
+    for (int li = 0; li < links->len; li++) {
+      IDProperty *link = IDP_GetIndexArray(links, li);
+      IDProperty *bone_prop = link ? IDP_GetPropertyTypeFromGroup(link, "bone", IDP_STRING) :
+                                     nullptr;
+      if (bone_prop != nullptr &&
+          std::strcmp(IDP_string_get(bone_prop), pchan_tip.name) == 0)
+      {
+        owns_pchan = true;
+        break;
+      }
+    }
+    if (!owns_pchan) {
+      continue;
+    }
+    Bone *ik_bone = BKE_armature_find_bone_name(arm, IDP_string_get(name_prop));
+    if (ik_bone == nullptr || ik_bone->system_properties == nullptr) {
+      return true; /* 无标志 → 原生开启（历史默认）。 */
+    }
+    IDProperty *native_prop = IDP_GetPropertyFromGroup_null(
+        ik_bone->system_properties, "mmd_native_ik_enabled");
+    return native_prop == nullptr ||
+           (native_prop->type == IDP_BOOLEAN && IDP_bool_get(native_prop) != 0);
+  }
+  return false;
 }
 
 static void find_ik_constraints(Object *ob,
-                                 ListBaseT<bConstraint> *constraints,
-                                 Vector<bConstraint *> &ik_constraints)
+                                bPoseChannel &pchan_tip,
+                                ListBaseT<bConstraint> *constraints,
+                                Vector<bConstraint *> &ik_constraints)
 {
   for (bConstraint &con : *constraints) {
     if (con.type == CONSTRAINT_TYPE_KINEMATIC) {
-      if (mmd_approximation_is_silent(ob, con)) {
+      if (mmd_approximation_is_silent(ob, pchan_tip, con)) {
         continue;
       }
       bKinematicConstraint *data = (bKinematicConstraint *)con.data;
@@ -103,7 +156,7 @@ static void find_ik_constraints(Object *ob,
 static void initialize_posetree(Object *ob, bPoseChannel *pchan_tip)
 {
   Vector<bConstraint *> ik_constraints;
-  find_ik_constraints(ob, &pchan_tip->constraints, ik_constraints);
+  find_ik_constraints(ob, *pchan_tip, &pchan_tip->constraints, ik_constraints);
 
   if (ik_constraints.is_empty()) {
     return;

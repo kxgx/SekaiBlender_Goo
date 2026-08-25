@@ -29,9 +29,9 @@ namespace blender {
 #define BLENDER_VERSION_SUFFIX
 
 /* Product branding is separate from Blender's internal compatibility version. */
-#define SEKAIBLENDER_PRODUCT_NAME "SekaiBlender"
-#define SEKAIBLENDER_PRODUCT_VERSION "1.0"
-#define SEKAIBLENDER_PRODUCT_VERSION_STRING "SekaiBlender 1.0"
+#define SEKAIBLENDER_PRODUCT_NAME "SekaiBlender Goo"
+#define SEKAIBLENDER_PRODUCT_VERSION "3.0"
+#define SEKAIBLENDER_PRODUCT_VERSION_STRING "SekaiBlender Goo 3.0"
 
 /* Blender file format version. */
 #define BLENDER_FILE_VERSION BLENDER_VERSION

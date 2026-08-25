@@ -595,14 +595,21 @@ static wmOperatorStatus wm_pmx_import_exec(bContext *C, wmOperator *op)
     const bool use_legacy = legacy != nullptr && std::strcmp(legacy, "1") == 0;
     const char *v8 = BLI_getenv("MMD_CCD_V8");
     const bool use_v8 = !use_legacy && (v8 == nullptr || std::strcmp(v8, "0") != 0);
-    const int a_ik = use_v8 ? 0 : mmd_auto_apply_ik(bmain_imp, arm, op->reports);
+    /* mmd_tools（Blender 5.0）对齐：始终创建 iTaSC IK 约束（MMD_IK_Approx +
+     * MMD_IK_Limit）——mmd_tools 的 IK 完全由它们承担。原生 CCD V8 与 iTaSC
+     * 可以共存：原生求解期间会临时静音 MMD_IK_Approx（见 mmd_ccd_ik_eval），
+     * VMD 播放时原生 CCD 被禁用、iTaSC 常驻求解（与 mmd_tools 一致）。
+     * 此前"V8 默认开启时跳过近似 IK"会让模型没有任何 iTaSC 约束，导入
+     * VMD 后腿链无法解向 IK 控制骨（"腿找原点"）。 */
+    const int a_ik = mmd_auto_apply_ik(bmain_imp, arm, op->reports);
     const int a_append = mmd_auto_apply_append(bmain_imp, arm, op->reports);
     const int a_fixed = mmd_auto_apply_fixed_axis(bmain_imp, arm, op->reports);
     const int a_local = mmd_auto_apply_local_axis(bmain_imp, arm, op->reports);
-    if (use_v8) {
+    if (use_v8 && a_ik > 0) {
       BKE_report(op->reports,
                  RPT_INFO,
-                 "Skipped Approximate IK because native MMD CCD V8 is enabled by default");
+                 "Approximate IK created alongside native MMD CCD V8 "
+                 "(iTaSC drives VMD playback, mmd_tools parity)");
     }
     BKE_reportf(op->reports,
                 RPT_INFO,

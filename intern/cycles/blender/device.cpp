@@ -9,6 +9,9 @@
 #include "BKE_scene.hh"
 #include "RNA_prototypes.hh"
 
+#include <cstdio>
+#include <cstdlib>
+
 CCL_NAMESPACE_BEGIN
 
 enum ComputeDevice {
@@ -195,6 +198,46 @@ DeviceInfo blender_device_info(blender::UserDef &b_preferences,
     }
     else {
       device = cpu_device;
+    }
+  }
+
+  /* SekaiBlender：SEKAI_FORCE_GPU=1 全局 GPU-only 渲染。
+   * 忽略场景/偏好里的 CPU 选择（含命令行 --cycles-device CPU 之外的一切），
+   * 自动挑选第一个可用的 GPU 后端（CUDA > OptiX > HIP > oneAPI > Metal）。
+   * 只做"升级"：已经是 GPU/MULTI 的选择不受影响；没有任何可用 GPU 时
+   * 改用 dummy 设备让渲染明确失败——绝不回退 CPU 渲染。 */
+  if (std::getenv("SEKAI_FORCE_GPU") != nullptr) {
+    if (device.type == DEVICE_CPU) {
+      static const uint kGpuMasks[] = {DEVICE_MASK_CUDA,
+                                       DEVICE_MASK_OPTIX,
+                                       DEVICE_MASK_HIP,
+                                       DEVICE_MASK_ONEAPI,
+                                       DEVICE_MASK_METAL};
+      for (const uint mask : kGpuMasks) {
+        vector<DeviceInfo> devices;
+        for (const DeviceInfo &info : Device::available_devices(mask)) {
+          if (info.meets_driver_requirement) {
+            devices.push_back(info);
+          }
+        }
+        if (!devices.empty()) {
+          const int threads = blender_device_threads(b_scene);
+          device = Device::get_multi_device(devices, threads, background);
+          adjust_device_info(device, cpreferences, preview);
+          fprintf(stderr,
+                  "[Sekai] SEKAI_FORCE_GPU: forcing render device -> %s\n",
+                  device.description.c_str());
+          break;
+        }
+      }
+    }
+    if (device.type == DEVICE_CPU) {
+      /* GPU-only：没有可用 GPU 时渲染将失败并显示该错误，而不是回退 CPU。 */
+      device = Device::dummy_device(
+          "SEKAI_FORCE_GPU (GPU-only): no usable GPU device found; refusing to render on CPU");
+      fprintf(stderr,
+              "[Sekai] SEKAI_FORCE_GPU: no usable GPU device found; render will fail "
+              "(GPU-only mode).\n");
     }
   }
 

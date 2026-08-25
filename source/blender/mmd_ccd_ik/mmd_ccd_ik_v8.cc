@@ -11,8 +11,8 @@
  * analyze_chinatsu_mmd_ik_fixture.py 的数学 helper 实现。
  *
  * 关键不变量（vs 旧 V3 翻车点）：
- * 1. q_current 初始 identity；m0 从 q_base 传播（跨链共享，不每链重置）。
- * 2. D3DXQuaternionMultiply 反序：delta*q_cur（delta 左乘），首轮 q_cur*q_base（q_base 右乘）。
+ * 1. q_current 初始为 q_base（完整 FK 局部旋转，由调用方设置）；m0 从 q_base 传播（跨链共享，不每链重置）。
+ * 2. D3DXQuaternionMultiply 反序：delta*q_cur（delta 左乘），不再有"首轮吸收 q_base"。
  * 3. clamp cap = (lo+1)*ik_angle*2.0 对称（半角空间）。
  * 4. 前半迭代（iter < iterations>>1）有限位骨轴钉死 ±坐标轴。
  * 5. cross_local = M × axis_world（列向量左乘 row-major M），非 v×M。
@@ -558,18 +558,16 @@ void solve_chain_v8(const CCDIKV8Chain &chain,
           axis_local[2] * std::sin(half),
       };
 
-      /* D3DX 反序：q_cur = delta * q_cur（delta 左乘） */
+      /* D3DX 反序：q_cur = delta * q_cur（delta 左乘）。
+       * q_current 已由调用方初始化为 q_base（完整局部旋转），这里左乘
+       * delta 即得到"FK 姿态 + CCD 修正"的完整旋转。旧的"首轮 q_cur *= q_base"
+       * 吸收逻辑要求调用方从 identity 起步，导致首轮即收敛（未被旋转）的
+       * link 输出恒为 identity——烘焙/回放时这些链骨被写成绑定姿态。 */
       float q_cur[4];
       std::memcpy(q_cur, bones[link_idx].q_current_mmd, sizeof(float[4]));
       float tmp[4];
       quat_mul(delta, q_cur, tmp);
       std::memcpy(q_cur, tmp, sizeof(float[4]));
-
-      /* 首轮：q_cur = q_cur * q_base（q_base 右乘） */
-      if (iteration_index == 0) {
-        quat_mul(q_cur, bones[link_idx].q_base_mmd, tmp);
-        std::memcpy(q_cur, tmp, sizeof(float[4]));
-      }
 
       /* Euler limit 全程执行：前半反射、后半硬贴 */
       if (link.has_limit) {

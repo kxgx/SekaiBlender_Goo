@@ -422,7 +422,8 @@ static void blo_update_defaults_scene(Main *bmain, Scene *scene)
 {
   ToolSettings *ts = scene->toolsettings;
 
-  STRNCPY_UTF8(scene->r.engine, RE_engine_id_BLENDER_EEVEE);
+  /* SekaiBlender 默认渲染引擎：Goo Engine（EEVEE Next 的 GPU 管线）。 */
+  STRNCPY_UTF8(scene->r.engine, RE_engine_id_BLENDER_GOOENGINE);
 
   scene->r.cfra = 1.0f;
   scene->r.im_format.exr_flag |= R_IMF_EXR_FLAG_MULTIPART;

@@ -662,11 +662,10 @@ static void mmd_ccd_v8_evaluate(Depsgraph *depsgraph,
       vb.parent_index = -1;
     }
 
-    /* q_current_mmd: 初始化为 identity（跨链共享） */
-    vb.q_current_mmd[0] = 1.0f;
-    vb.q_current_mmd[1] = 0.0f;
-    vb.q_current_mmd[2] = 0.0f;
-    vb.q_current_mmd[3] = 0.0f;
+    /* q_current_mmd: 初始化为 q_base（完整 FK 局部旋转）。CCD 求解只在其上
+     * 左乘 delta；首轮即收敛（未被旋转）的 link 因此保留 FK 姿态，而不是
+     * 旧语义下的 identity（绑定姿态）。 */
+    std::memcpy(vb.q_current_mmd, vb.q_base_mmd, sizeof(float[4]));
 
     /* Keep the direct pose-derived m0 for external targets and anchor head
      * positions.  The solver propagates the MMD rotation hierarchy for links
@@ -1036,7 +1035,17 @@ void mmd_ccd_ik_evaluate(Depsgraph *depsgraph, Object *armature_obj)
 
   /* 2. Early-out: no bone has native CCD enabled. */
   if (!has_any_native_ik_enabled(*armature_obj, *ik_bones_arr)) {
+    if (std::getenv("MMD_IK_EVAL_TRACE") != nullptr) {
+      std::fprintf(stderr, "[MMD IK Eval] early-out: no native IK enabled\n");
+    }
     return;
+  }
+  if (std::getenv("MMD_IK_EVAL_TRACE") != nullptr) {
+    std::fprintf(stderr,
+                 "[MMD IK Eval] ENTER solve (legacy=%d v8=%d) publish=%d\n",
+                 int(mmd_ccd_use_legacy_solver()),
+                 int(mmd_ccd_use_v8_solver()),
+                 int(depsgraph != nullptr && DEG_is_active(depsgraph)));
   }
 
   const bool use_legacy = mmd_ccd_use_legacy_solver();

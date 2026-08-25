@@ -66,11 +66,13 @@ Keep the extracted folder intact: the executables load the `5.3` runtime directo
 - MMD edge preview driven by PMX `edge_flag` and `edge_size`.
 - AMD FSR 1.0 EASU/RCAS quality presets for the EEVEE viewport and renders.
 - **GPU render button** in the Render menu (`GPU 渲染（图像/动画）`): picks the best GPU backend automatically — NVIDIA renders through Cycles CUDA (prebuilt kernels for sm_86/sm_89), AMD through HIP when available, and falls back to the GPU GooEngine/EEVEE. The previous engine is restored after the render.
-- **NVIDIA auto-acceleration**: on NVIDIA systems, Cycles CUDA devices are enabled automatically at startup (and via `GPU 加速设置…`), while Vulkan stays active for the viewport and the GPU CCD bake — CUDA and Vulkan work side by side.
-- **Auto GPU bake on VMD import**: importing a VMD onto a PMX-rigged model automatically runs the GPU CCD bake over the motion's frame range and assigns the resulting FK Action. Toggle with the `Auto GPU Bake` import option.
-- **CUDA bake backend**: the CCD bake picks its backend automatically — NVIDIA GPUs (sm_86/sm_89) solve through a prebuilt CUDA kernel (4936 frames ≈ 230 ms on an RTX 4070 Ti SUPER), all other vendors fall back to the Vulkan compute path. The bake report shows the backend used (`GPU bake (CUDA|Vulkan)`).
-- GPU bake caches the compiled compute shader/kernel and the bone/chain/link constant buffers across calls, so repeat bakes skip shader compilation and constant uploads.
-- SekaiBlender branding, Chinese UI defaults and a 30 FPS startup timeline.
+- **NVIDIA auto-acceleration**: on NVIDIA systems, Cycles CUDA devices are enabled automatically at startup (and via `GPU 加速设置…`), while Vulkan stays active for the viewport — CUDA and Vulkan work side by side.
+- **No action bake**: the GPU CCD action bake (`WM_OT_mmd_bake_motion`, the former `GPU 烘焙` menu entry) has been **removed** — VMD import plays the source action with the IK constraints live (mmd_tools parity) and the **physics bake** remains the only bake workflow. The CCD solver code stays in-tree but is no longer registered or reachable from the UI.
+- **Global GPU-only switch** (`SEKAI_FORCE_GPU=1`): with the environment variable set, SekaiBlender never renders on the CPU either:
+  - Cycles ignores scene/preference CPU settings and always picks the best available GPU backend (CUDA → OptiX → HIP → oneAPI → Metal), including F12, the Render menu and background renders; without any usable GPU device the render **fails with a clear error instead of falling back to CPU**.
+  - Make it permanent on Windows with `setx SEKAI_FORCE_GPU 1` (restart Blender afterwards).
+- **Maximized GPU utilization**: the viewport runs on the Vulkan backend by default and Cycles renders *and denoises* on the GPU — OIDN's CUDA/HIP device is enabled by default for both final-render and viewport denoising (`denoising_use_gpu` defaults on), and the GPU setup operator / `load_post` re-applies GPU device + denoising settings to every scene. Enabling OptiX (hardware ray tracing) additionally requires the NVIDIA OptiX SDK at build time: configure with `-DWITH_CYCLES_DEVICE_OPTIX=ON` plus the SDK path and rebuild Cycles.
+- SekaiBlender Goo branding (version 3.0), Chinese UI defaults and a 30 FPS startup timeline.
 
 ## Verified Workflows
 
@@ -80,6 +82,11 @@ Keep the extracted folder intact: the executables load the `5.3` runtime directo
 | PMX, MMD and VMD direct tests | 170 passed, 11 environment-gated skips, 0 failed |
 | PMX export round-trip | 2 real PMX models, all 11 sections matched |
 | VMD camera round-trip | Real 27-frame sample, zero resampling error |
+| GPU bake vs native IK legs (耀嘉音 + 你的笑容 VMD, 9871 sub-sampled frames) | Baked FK legs match native IK playback exactly at checked frames |
+| Sub-frame bake (subframes=2) | 9871 keys for 4936 frames, exact .5 half-frame keys; integer frames equal subframes=1 (max diff 6.7e-8), half-frame keys capture bezier midpoints linear interpolation misses by up to 1.7e-3 |
+| FP64 vs FP32 CUDA bake | Max quaternion diff 8.6e-8 (fp64 available via `MMD_BAKE_FP64=1`) |
+| Multi-stream CUDA bake (2 vs 4 streams) | Identical results (max diff 1.2e-7) |
+| Repeated bake consistency | Second bake reproduces first bake's IK gating via the recorded VMD source action |
 
 ## Build On Windows
 

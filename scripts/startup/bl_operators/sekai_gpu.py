@@ -63,10 +63,15 @@ def gpu_auto_setup():
             cprefs.update_device_entries(usable)
         except Exception:
             pass
-        # 所有 Cycles 场景默认走 GPU 设备。
+        # 所有 Cycles 场景默认走 GPU 设备 + GPU 降噪（OIDN CUDA/HIP 设备）。
         for scene in bpy.data.scenes:
             if scene.render.engine == "CYCLES":
                 scene.cycles.device = "GPU"
+                try:
+                    scene.cycles.denoising_use_gpu = True
+                    scene.cycles.preview_denoising_use_gpu = True
+                except Exception:
+                    pass
         return dtype, enabled
     return None
 
@@ -105,15 +110,32 @@ class SEKAI_OT_gpu_render(Operator):
     bl_idname = "sekai.gpu_render"
     bl_label = "GPU 渲染"
     bl_description = (
-        "使用 GPU 渲染：优先 Cycles CUDA/HIP；无可用 GPU 设备时回退当前引擎 "
-        "（GooEngine/EEVEE 本身即 GPU 渲染）。渲染完成后恢复原引擎设置"
+        "使用 GPU 渲染（默认 Goo Engine/EEVEE）。开启\"速度优先\"时临时套用"
+        "EEVEE 加速预设（关闭光线追踪/运动模糊/过扫描、半分辨率阴影、降采样数），"
+        "渲染完成后恢复原设置"
     )
 
     animation: bpy.props.BoolProperty(name="Animation", default=False)
     use_cycles: bpy.props.BoolProperty(
         name="Use Cycles GPU",
+        default=False,
+        description="优先切换到 Cycles 并使用 GPU 设备渲染（默认用当前引擎——"
+        "Goo Engine/EEVEE 本身即 GPU 渲染）",
+    )
+    fast: bpy.props.BoolProperty(
+        name="Fast",
         default=True,
-        description="优先切换到 Cycles 并使用 GPU 设备渲染",
+        description="速度优先：临时套用 EEVEE 加速预设（关光追/运动模糊/过扫描、"
+        "半分辨率阴影、16 渲染采样），完成后恢复",
+    )
+
+    # EEVEE（Goo Engine）速度预设：光追是最大的 GPU 时间消耗项。
+    _EEVEE_FAST_KEYS = (
+        ("use_raytracing", False),
+        ("shadow_resolution_scale", 0.5),
+        ("taa_render_samples", 16),
+        ("use_overscan", False),
+        ("use_volumetric_shadows", False),
     )
 
     def execute(self, context):
@@ -124,16 +146,28 @@ class SEKAI_OT_gpu_render(Operator):
         # 有场景摄像机时按摄像机渲染（避免渲染视口当前视角，例如放大到腿部的
         # 视角会渲染出"满屏腿"）；没有摄像机才回退视口渲染。
         use_camera = scene.camera is not None
+        # 速度预设：保存 → 套用 → 渲染后恢复。
+        saved_eevee = {}
+        old_motion_blur = scene.render.use_motion_blur
+        applied_fast = False
         try:
             if self.use_cycles and res is not None and scene.render.engine != "CYCLES":
                 scene.render.engine = "CYCLES"
             if scene.render.engine == "CYCLES" and res is not None:
                 scene.cycles.device = "GPU"
+            if self.fast and scene.render.engine != "CYCLES":
+                eevee = scene.eevee
+                for key, value in self._EEVEE_FAST_KEYS:
+                    if hasattr(eevee, key):
+                        saved_eevee[key] = getattr(eevee, key)
+                        setattr(eevee, key, value)
+                if old_motion_blur:
+                    scene.render.use_motion_blur = False
+                applied_fast = True
             bpy.ops.render.render(
                 "INVOKE_DEFAULT",
                 animation=self.animation,
                 use_viewport=not use_camera,
-                use_camera=use_camera,
                 write_still=True,
             )
             if not use_camera:
@@ -141,7 +175,18 @@ class SEKAI_OT_gpu_render(Operator):
                     {"INFO"},
                     "场景没有摄像机，已按视口渲染；导入 VMD 摄像机或添加摄像机后按场景相机渲染",
                 )
+            if applied_fast:
+                self.report(
+                    {"INFO"},
+                    "已套用速度优先预设（关光追/半分辨率阴影/16 采样/关运动模糊），渲染完成已恢复",
+                )
         finally:
+            for key, value in saved_eevee.items():
+                try:
+                    setattr(scene.eevee, key, value)
+                except Exception:
+                    pass
+            scene.render.use_motion_blur = old_motion_blur
             if scene.render.engine != old_engine:
                 scene.render.engine = old_engine
             elif old_device and scene.cycles.device != old_device:

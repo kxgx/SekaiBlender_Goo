@@ -398,15 +398,13 @@ void solve_chain_v8(MmdBakeChainConst chain, int frame_base, int out_frame_base)
                         axis_local.y * sin(half_angle),
                         axis_local.z * sin(half_angle));
 
-      /* D3DX 反序：q_cur = delta * q_cur（紧凑输出槽位） */
+      /* D3DX 反序：q_cur = delta * q_cur（紧凑输出槽位）。
+       * q_current 已初始化为 q_base（完整 FK 旋转），左乘 delta 即完整
+       * "FK + CCD 修正"旋转；旧语义从 identity 起步、首轮再吸收 q_base，
+       * 导致首轮即收敛的 link 输出恒为 identity。 */
       int out_idx = link.out_index;
       float4 q_cur = frame_out_buf[out_frame_base + out_idx].q_current_mmd;
       q_cur = quat_mul(delta, q_cur);
-
-      /* 首轮：q_cur = q_cur * q_base */
-      if (iteration_index == 0) {
-        q_cur = quat_mul(q_cur, frame_buf[frame_base + link_idx].q_base_mmd);
-      }
 
       if (link.has_limit != 0) {
         q_cur = apply_mmd_link_limit(
@@ -454,12 +452,12 @@ void main()
   }
   int frame_base = int(frame) * bone_count;
 
-  /* 1. q_current 初始 identity（仅链骨有紧凑输出槽位） */
+  /* 1. q_current 初始为 q_base（仅链骨有紧凑输出槽位） */
   int out_frame_base = int(frame) * link_count;
   for (int i = 0; i < bone_count; i++) {
     int out_idx = bone_const_buf[i].out_index;
     if (out_idx >= 0) {
-      frame_out_buf[out_frame_base + out_idx].q_current_mmd = float4(1.0, 0.0, 0.0, 0.0);
+      frame_out_buf[out_frame_base + out_idx].q_current_mmd = frame_buf[frame_base + i].q_base_mmd;
     }
   }
 

@@ -182,209 +182,41 @@ static const EnumPropertyItem *vmd_target_armature_itemf(bContext *C,
  * IK / append-transform / axis solve into per-bone keyframes. The Blender-side
  * approximations created by PMX auto-apply (or by the manual Apply operators)
  * would fight those baked curves, producing broken motion. So we suspend every
- * MMD_* approximation IK constraint (enforce = 0) after the VMD animation is
- * written. They can be re-enabled from the constraint panel or via the Apply
- * operators for manual posing.
- *
- * However, some VMD files are "mixed-type": certain IK chains (e.g. NXDE's
- * knee) have NO FK keyframes on chain bones — the knee only bends via IK
- * solving. Blindly suspending all IK constraints leaves such chains frozen
- * (the knee stays straight, the leg only translates with the upper body).
- *
- * To support both pure-FK VMDs (suspend all IK) and mixed-type VMDs (keep IK
- * for chains lacking FK coverage), we inspect the just-built action's F-Curves
- * per IK chain: if EVERY chain-link bone has its own rotation F-Curve, the
- * chain is pure-FK-baked → suspend; otherwise keep the IK constraint active so
- * the E-phase CCD solver can bend the chain. */
+ * MMD_* approximation constraint that double-applies a baked effect (Local/Fixed
+ * axis; see vmd_suspend_mmd_approx_constraints below). The IK constraints
+ * themselves (MMD_IK_Approx / MMD_IK_Limit) stay active and solve each leg/arm
+ * chain toward its IK control bone every frame — exactly what mmd_tools does in
+ * Blender 5.0 — with the per-frame IK/FK switch driven by the VMD's IK toggle
+ * track (mmd_ik_toggle / influence F-Curves). The native CCD V8 solver is
+ * disabled during VMD playback so it never double-solves the same chain. */
 
-/** Check whether any F-Curve in the action drives a *meaningful* rotation
- *  channel of the given bone. Matches data paths of the form:
- *    pose.bones["<bone_name>"].rotation_quaternion
- *    pose.bones["<bone_name>"].rotation_euler
- *    pose.bones["<bone_name>"].rotation_axis_angle
- *  The bone_name comes from PMX name_local and never contains '"' or ']'.
+/* mmd_tools（Blender 5.0）对齐：VMD 播放期间的 IK 解算完全交给 iTaSC——
+ * PMX 导入创建的 MMD_IK_Approx（IK 约束，subtarget=IK 控制骨）与
+ * MMD_IK_Limit（LIMIT_ROTATION）始终保持激活，腿链逐帧解向 IK 控制骨
+ * （其位置由 VMD 位移轨道驱动），与 mmd_tools 的机制一致。
  *
- *  "Meaningful" means the channel has at least 2 keyframes whose values
- *  actually differ. VMD exporters frequently emit a single identity-quaternion
- *  keyframe (or several identical ones) for bones that are meant to be driven
- *  by IK solving rather than by FK curves. Treating such placeholder curves as
- *  "no FK rotation" is what lets mixed-type VMDs keep their IK chains active so
- *  the E-phase CCD solver can bend the knee/ankle. Without this check every
- *  chain-link bone with a placeholder curve would be misclassified as
- *  pure-FK-baked, and the IK constraint would be wrongly suspended — freezing
- *  the knee straight while the IK target bone keeps translating. */
-static bool bone_has_rotation_fcurve(const bAction &action,
-                                     const AnimData &ob_adt,
-                                     const std::string &bone_name)
-{
-  /* Build the prefix we expect to see at the start of the rna_path:
-   *   pose.bones["<bone_name>"].rotation
-   * Checking this single prefix is enough — rotation_quaternion / _euler /
-   * _axis_angle all share it and all qualify as "the bone has FK rotation". */
-  const std::string prefix = "pose.bones[\"" + bone_name + "\"].rotation";
-
-  /* Use the animrig C++ wrapper to traverse the slotted action. VMD imports
-   * produce a single layer/strip/channelbag, but we walk all of them for
-   * safety. The slot handle is read from the armature's animdata. */
-  const animrig::Action &anim = action.wrap();
-  const int slot_handle = ob_adt.slot_handle ? ob_adt.slot_handle :
-                                                anim.slot(0)->handle;
-  for (const animrig::Layer *layer : anim.layers()) {
-    for (const animrig::Strip *strip : layer->strips()) {
-      const animrig::Channelbag *cbag = strip->data<animrig::StripKeyframeData>(anim)
-                                            .channelbag_for_slot(slot_handle);
-      if (cbag == nullptr) {
-        continue;
-      }
-      for (const FCurve *fc : cbag->fcurves()) {
-        if (fc->rna_path().is_empty()) {
-          continue;
-        }
-        if (strncmp(fc->rna_path().c_str(), prefix.c_str(), prefix.size()) != 0) {
-          continue;
-        }
-        /* A single keyframe (or several identical ones) is a placeholder,
-         * not a real FK-baked channel. Require >= 2 keyframes. */
-        if (fc->totvert < 2) {
-          continue;
-        }
-        /* And require at least one keyframe whose value differs from the
-         * first — a flat constant curve is also just a placeholder. */
-        const float first_val = fc->bezt[0].vec[1][1];
-        for (int i = 1; i < fc->totvert; i++) {
-          if (std::fabs(fc->bezt[i].vec[1][1] - first_val) > 1e-5f) {
-            return true;
-          }
-        }
-      }
-    }
-  }
-  return false;
-}
-
-/** Check whether the action contains any `mmd_ik_toggle` F-Curve.
- *
- *  apply_vmd_ik_toggle() creates per-frame `pose.bones["<name>"].mmd_ik_toggle`
- *  F-Curves when the VMD file ships a property (IK on/off) track. The E-phase
- *  CCD solver reads these F-Curves at eval time to decide per-frame whether to
- *  solve each IK chain.
- *
- *  When such F-Curves exist, we keep native CCD enabled on EVERY IK control
- *  bone and let the per-frame toggle gate the solver. When they don't exist
- *  (pure-FK VMD with no property track), we fall back to the mixed-chain
- *  heuristic below. */
-static bool action_has_ik_toggle_fcurves(const bAction &action, const AnimData &ob_adt)
-{
-  const animrig::Action &anim = action.wrap();
-  const int slot_handle = ob_adt.slot_handle ? ob_adt.slot_handle :
-                                                anim.slot(0)->handle;
-  for (const animrig::Layer *layer : anim.layers()) {
-    for (const animrig::Strip *strip : layer->strips()) {
-      const animrig::Channelbag *cbag = strip->data<animrig::StripKeyframeData>(anim)
-                                            .channelbag_for_slot(slot_handle);
-      if (cbag == nullptr) {
-        continue;
-      }
-      for (const FCurve *fc : cbag->fcurves()) {
-        if (fc->rna_path().is_empty()) {
-          continue;
-        }
-        if (strstr(fc->rna_path().c_str(), ".mmd_ik_toggle") != nullptr) {
-          return true;
-        }
-      }
-    }
-  }
-  return false;
-}
-
+ * IK/FK 逐帧切换由 apply_vmd_ik_toggle 写入的 mmd_ik_toggle / influence
+ * F-Curve 驱动；VMD 没有开关轨道时 influence 保持 1.0（IK 常开）——同样
+ * 与 mmd_tools 默认一致。此前"混合链启发式"（按 FK 曲线覆盖分类后挂起
+ * 纯 FK 链、给混合链开原生 CCD）偏离 mmd_tools：IK 舞蹈里腿链 FK 轨道是
+ * 录制时的残留姿态，播放它们会让腿僵在绑定姿态（"腿找原点"），而原生
+ * CCD 与 iTaSC 双重求解又会互相覆盖导致腿部扭曲。原生 CCD V8 是实时
+ * 摆姿势路径专用，VMD 播放一律禁用。 */
 static int vmd_suspend_mmd_approx_constraints(Main *bmain, Object *ob)
 {
   if (ob->pose == nullptr) {
     return 0;
   }
 
-  /* Load PMX IK definitions so we can inspect each IK chain's link bones. */
+  /* 禁用全部 IK 控制骨的原生 CCD V8（VMD 播放 = iTaSC，与 mmd_tools 一致）。 */
   io::pmx::PMXBoneIKDefinitionSet ik_def;
-  const bool has_ik_def = io::pmx::read_bone_ik_definition(ob->id, ik_def);
-
-  /* Detect whether the VMD shipped a property (IK toggle) track.
-   * If it did, the E-phase CCD solver will read the per-frame toggle value
-   * from the `mmd_ik_toggle` F-Curves and decide itself whether to solve each
-   * chain. In that case we keep native IK enabled on every IK control bone and
-   * skip the mixed-chain heuristic entirely.
-   *
-   * If it did NOT (pure-FK VMD with no property track), we fall back to the
-   * mixed-chain heuristic: chains whose links all have FK rotation curves are
-   * treated as FK-baked and their native IK is disabled; chains missing FK
-   * coverage keep native IK so CCD can bend them. */
-  bool has_vmd_ik_toggle = false;
-  if (has_ik_def && ob->adt && ob->adt->action) {
-    has_vmd_ik_toggle = action_has_ik_toggle_fcurves(*ob->adt->action, *ob->adt);
-  }
-    /* R6-VMD 兜底：apply_vmd_ik_toggle 总会在 IK 控制骨上写静态 mmd_ik_toggle
-   * 属性（首帧状态回退）。通道包探测失败时用它作为信号。 */
-  if (!has_vmd_ik_toggle && has_ik_def && ob->data != nullptr) {
+  if (io::pmx::read_bone_ik_definition(ob->id, ik_def)) {
     bArmature *arm = id_cast<bArmature *>(ob->data);
     if (arm != nullptr) {
       for (const io::pmx::PMXBoneIKDefinition &def : ik_def.ik_bones) {
         Bone *ik_bone = BKE_armature_find_bone_name(arm, def.bone_name.c_str());
-        if (ik_bone != nullptr && ik_bone->system_properties != nullptr &&
-            IDP_GetPropertyFromGroup_null(ik_bone->system_properties, "mmd_ik_toggle") != nullptr)
-        {
-          has_vmd_ik_toggle = true;
-          break;
-        }
-      }
-    }
-  }
-  
-  /* Set of link-bone names belonging to IK chains that LACK full FK rotation
-   * coverage. For multi-link chains (e.g. leg IK: [knee, thigh]) ALL links
-   * must have FK rotation to qualify as pure-FK; a single missing link forces
-   * the whole chain to stay on IK. */
-  std::set<std::string> mixed_chain_link_bones;
-  /* Set of IK control bone names (def.bone_name) for mixed-type chains.
-   * These keep native CCD IK enabled so the E-phase solver can bend them. */
-  std::set<std::string> mixed_ik_bone_names;
-  if (!has_vmd_ik_toggle && has_ik_def && ob->adt && ob->adt->action) {
-    bAction &action = *ob->adt->action;
-    AnimData &ob_adt = *ob->adt;
-    for (const io::pmx::PMXBoneIKDefinition &def : ik_def.ik_bones) {
-      bool any_link_missing_fk = false;
-      for (const io::pmx::PMXBoneIKLink &link : def.links) {
-        if (!bone_has_rotation_fcurve(action, ob_adt, link.bone_name)) {
-          any_link_missing_fk = true;
-          break;
-        }
-      }
-      if (any_link_missing_fk) {
-        for (const io::pmx::PMXBoneIKLink &link : def.links) {
-          mixed_chain_link_bones.insert(link.bone_name);
-        }
-        mixed_ik_bone_names.insert(def.bone_name);
-      }
-    }
-  }
-
-  /* Toggle native CCD IK per IK control bone.
-   *
-   * R6-VMD（mmd_tools 对齐）：VMD 携带 IK 开关轨道时，完全禁用原生 CCD V8，
-   * 由保持激活的 MMD_IK_Approx 约束（influence 逐帧 F-Curve 驱动）完成
-   * IK/FK 切换——与 mmd_tools 的机制同构。此前原生求解器与 iTaSC 约束
-   * 同时求解同一条腿链、互相覆盖，导致腿部扭曲。
-   *
-   * 无开关轨道（纯 FK VMD）时保留混合链启发式：纯 FK 链禁用原生 IK，
-   * 缺 FK 覆盖的混合链保留 CCD 弯曲能力。 */
-  if (has_ik_def) {
-    bArmature *arm = id_cast<bArmature *>(ob->data);
-    if (arm) {
-      for (const io::pmx::PMXBoneIKDefinition &def : ik_def.ik_bones) {
-        const bool is_mixed = (!has_vmd_ik_toggle) &&
-                              mixed_ik_bone_names.count(def.bone_name) > 0;
-        Bone *ik_bone = BKE_armature_find_bone_name(arm, def.bone_name.c_str());
-        if (ik_bone) {
-          mmd::mmd_native_ik_set_enabled(*ik_bone, is_mixed);
+        if (ik_bone != nullptr) {
+          mmd::mmd_native_ik_set_enabled(*ik_bone, false);
         }
       }
     }
@@ -436,92 +268,22 @@ static int vmd_suspend_mmd_approx_constraints(Main *bmain, Object *ob)
         continue;
       }
 
-      /* Suspend IK-related approximations (MMD_IK_Approx / MMD_IK_Limit).
-       *
-       * Keep MMD_Append_Rotation active — the D bone chain needs it to
-       * follow source bones even when VMD fcurves drive those source
-       * bones directly. */
+      /* IK 相关约束（MMD_IK_Approx / MMD_IK_Limit）：始终保留激活。
+       * 与 mmd_tools 一致——IK 约束常驻，per-frame 开关走 influence 曲线；
+       * 无开关轨道时 influence=1.0（IK 常开，mmd_tools 默认）。
+       * MMD_Append_Rotation 保持激活——D 骨链需要它跟随源骨。 */
       if (strcmp(con->name, "MMD_IK_Approx") != 0 &&
           strcmp(con->name, "MMD_IK_Limit") != 0)
       {
         continue;
       }
-      /* When the VMD ships an IK toggle track, keep ALL IK constraints active.
-       * The MMD_IK_Approx constraint (Blender native iTaSC IK) will override
-       * FK rotations when IK is on, and yield to FK when IK is off — the
-       * per-frame toggle is driven by the MMD_IK_Approx influence F-Curve
-       * created by apply_vmd_ik_toggle() in vmd_import.cc. This mirrors
-       * mmd_tools, which keyframes the IK constraint influence from the
-       * VMD IK toggle property track. */
-      if (has_vmd_ik_toggle) {
-        if (con->enforce == 0.0f) {
-          con->enforce = 1.0f;
-        }
-        kept++;
-        continue;
+      if (con->enforce == 0.0f) {
+        con->enforce = 1.0f;
       }
-      /* Mixed-type chain: this link bone belongs to an IK chain that lacks FK
-       * rotation coverage. Keep the constraint active so CCD can solve. */
-      if (mixed_chain_link_bones.count(pchan->name) > 0) {
-        kept++;
-        continue;
-      }
-      if (con->enforce != 0.0f) {
-        con->enforce = 0.0f;
-        suspended++;
-      }
+      kept++;
     }
   }
   if (suspended > 0 || kept > 0) {
-    DEG_id_tag_update_ex(bmain, &ob->id, ID_RECALC_GEOMETRY | ID_RECALC_TRANSFORM);
-    DEG_relations_tag_update(bmain);
-  }
-  return suspended;
-}
-
-/* R10-FIX：烘焙后 FK 动作覆盖全部链骨，无条件挂起所有 MMD 近似 IK 与原生
- * CCD，避免 iTaSC 继续把腿解向"静止在原点附近的 足IK 目标"（烘焙动作没有
- * 足IK 位移曲线——"腿找原点"）。不读取 mmd_ik_toggle 兜底属性：烘焙后的
- * 动作必然全链纯 FK。 */
-static int vmd_suspend_all_ik_after_bake(Main *bmain, Object *ob)
-{
-  if (ob->pose == nullptr) {
-    return 0;
-  }
-  int suspended = 0;
-  for (bPoseChannel *pchan = static_cast<bPoseChannel *>(ob->pose->chanbase.first);
-       pchan != nullptr;
-       pchan = pchan->next)
-  {
-    for (bConstraint *con = static_cast<bConstraint *>(pchan->constraints.first);
-         con != nullptr;
-         con = con->next)
-    {
-      if (strcmp(con->name, "MMD_IK_Approx") != 0 && strcmp(con->name, "MMD_IK_Limit") != 0) {
-        continue;
-      }
-      if (con->enforce != 0.0f) {
-        con->enforce = 0.0f;
-        suspended++;
-      }
-    }
-  }
-
-  /* 原生 CCD V8/V2 一并禁用。 */
-  io::pmx::PMXBoneIKDefinitionSet ik_def;
-  if (io::pmx::read_bone_ik_definition(ob->id, ik_def)) {
-    bArmature *arm = id_cast<bArmature *>(ob->data);
-    if (arm != nullptr) {
-      for (const io::pmx::PMXBoneIKDefinition &def : ik_def.ik_bones) {
-        Bone *ik_bone = BKE_armature_find_bone_name(arm, def.bone_name.c_str());
-        if (ik_bone != nullptr) {
-          mmd::mmd_native_ik_set_enabled(*ik_bone, false);
-        }
-      }
-    }
-  }
-
-  if (suspended > 0) {
     DEG_id_tag_update_ex(bmain, &ob->id, ID_RECALC_GEOMETRY | ID_RECALC_TRANSFORM);
     DEG_relations_tag_update(bmain);
   }
@@ -733,16 +495,16 @@ wmOperatorStatus wm_vmd_import_exec(bContext *C, wmOperator *op)
 
   vmd_activate_rigify_playback_mode(bmain, *target, op->reports);
 
-  /* Suspend MMD approximate constraints: VMD bakes its own solve, so the
-   * Blender-side approximations must yield to avoid fighting the baked curves. */
+  /* Suspend MMD approximate constraints that would double-apply baked effects
+   * (Local/Fixed axis). The IK constraints stay active and solve chains toward
+   * their IK control bones every frame — mmd_tools parity. */
   const int suspended = vmd_suspend_mmd_approx_constraints(bmain, target);
   if (suspended > 0) {
     BKE_reportf(op->reports,
                 RPT_INFO,
-                "Suspended %d MMD IK constraints. "
-                "Append/Fixed/Local kept active for D bone tracking. "
-                "Re-enable via the constraint panel or Apply operators for "
-                "manual posing.",
+                "Suspended %d MMD axis-approximation constraints. "
+                "IK chains stay active (iTaSC, mmd_tools parity) with per-frame "
+                "IK/FK switch from the VMD toggle track.",
                 suspended);
   }
 
@@ -780,6 +542,21 @@ wmOperatorStatus wm_vmd_import_exec(bContext *C, wmOperator *op)
         move_to_nla(controller_mesh->key->id,
                     result.morph_action.first_frame,
                     result.morph_action.last_frame);
+      }
+    }
+  }
+
+  /* 记录 VMD 源动作名到目标 Object 的 ID 属性（GPU 烘焙门控回退引用：
+   * 烘焙完成后活动动作会被替换为无 mmd_ik_toggle 曲线的烘焙结果，重复
+   * 烘焙必须回到源动作读取开关曲线，保证两次烘焙的门控一致）。 */
+  if (AnimData *adt = BKE_animdata_from_id(&target->id)) {
+    if (adt->action != nullptr) {
+      IDProperty *properties = IDP_EnsureProperties(&target->id);
+      if (IDProperty *existing = IDP_GetPropertyFromGroup_null(properties, "mmd_source_action")) {
+        IDP_AssignString(existing, adt->action->id.name + 2);
+      }
+      else {
+        IDP_AddToGroup(properties, IDP_NewString(adt->action->id.name + 2, "mmd_source_action"));
       }
     }
   }
@@ -860,65 +637,9 @@ wmOperatorStatus wm_vmd_import_exec(bContext *C, wmOperator *op)
   WM_event_add_notifier(C, NC_ANIMATION | ND_ANIMCHAN | NA_EDITED, nullptr);
   WM_event_add_notifier(C, NC_SCENE | ND_OB_ACTIVE, scene);
 
-  /* R8-GPU：导入动作后自动执行 GPU CCD 烘焙（FK 曲线）。
-   * 仅在模型带 PMX IK 定义时执行——合成测试骨架（无 IK 定义）不产生额外
-   * Action，避免污染无 IK 的导入流程。烘焙使用 use_gpu=True（Vulkan
-   * compute），并把生成的 "<VMD Action> | Baked" 设为活动 Action。 */
-  if (RNA_boolean_get(op->ptr, "auto_bake_gpu")) {
-    io::pmx::PMXBoneIKDefinitionSet ik_def;
-    const bool has_ik = io::pmx::read_bone_ik_definition(target->id, ik_def) &&
-                        !ik_def.ik_bones.empty();
-    if (has_ik && result.action.first_frame >= 0 &&
-        result.action.last_frame >= result.action.first_frame)
-    {
-      ViewLayer *view_layer = CTX_data_view_layer(C);
-      Base *base = BKE_view_layer_base_find(view_layer, target);
-      if (base != nullptr) {
-        Base *old_active = view_layer->basact;
-        view_layer->basact = base;
-        wmOperatorType *bake_ot = WM_operatortype_find("WM_OT_mmd_bake_motion", false);
-        if (bake_ot != nullptr) {
-          PointerRNA ptr = WM_operator_properties_create_ptr(bake_ot);
-          RNA_int_set(&ptr, "frame_start", result.action.first_frame);
-          RNA_int_set(&ptr, "frame_end", result.action.last_frame);
-          RNA_float_set(&ptr, "coordinate_scale", options.coordinate_scale);
-          RNA_boolean_set(&ptr, "use_gpu", true);
-          const wmOperatorStatus bake_status = WM_operator_name_call_ptr(
-              C, bake_ot, wm::OpCallContext::ExecDefault, &ptr, nullptr);
-          WM_operator_properties_free(&ptr);
-          if (bake_status == OPERATOR_FINISHED) {
-            AnimData *adt = BKE_animdata_from_id(&target->id);
-            bAction *source_action = adt != nullptr ? adt->action : nullptr;
-            if (source_action != nullptr) {
-              const std::string bake_name = std::string(source_action->id.name + 2) +
-                                            " | Baked";
-              bAction *baked = static_cast<bAction *>(
-                  BLI_findstring(&bmain->actions, bake_name.c_str(), offsetof(ID, name) + 2));
-              if (baked != nullptr) {
-                animrig::assign_action(baked, target->id);
-                /* 烘焙出的 FK 曲线覆盖所有链骨 → 无条件挂起全部 MMD 近似
-                 * IK 约束与原生 CCD（见 vmd_suspend_all_ik_after_bake），
-                 * 避免 iTaSC 把腿解向静止的 足IK 目标（"腿找原点"）。 */
-                vmd_suspend_all_ik_after_bake(bmain, target);
-                BKE_reportf(op->reports,
-                            RPT_INFO,
-                            "GPU bake complete: '%s' assigned to '%s'",
-                            bake_name.c_str(),
-                            target->id.name + 2);
-              }
-            }
-          }
-        }
-        view_layer->basact = old_active;
-      }
-    }
-    else if (!has_ik) {
-      BKE_report(op->reports,
-                 RPT_INFO,
-                 "Auto GPU bake skipped: model has no PMX IK definition");
-    }
-  }
-
+  /* 导入不再自动 GPU 烘焙（mmd_tools 一致：导入即回放源动作，IK 约束
+   * 常驻解算）。需要 FK 烘焙时手动运行 WM_OT_mmd_bake_motion
+   * （渲染菜单的 GPU 烘焙按钮 / 脚本调用）。 */
   return OPERATOR_FINISHED;
 }
 
@@ -1048,7 +769,6 @@ void wm_vmd_import_draw(bContext * /*C*/, wmOperator *op)
               UI_ITEM_NONE,
               "VMD Native Bezier",
               ICON_NONE);
-  layout.prop(op->ptr, "auto_bake_gpu", UI_ITEM_NONE, "Auto GPU Bake", ICON_NONE);
 }
 
 void wm_vmd_camera_import_draw(bContext * /*C*/, wmOperator *op)
@@ -1278,6 +998,54 @@ void wm_vmd_camera_export_draw(bContext * /*C*/, wmOperator *op)
 
 }  // namespace
 
+/* 烘焙后 FK 动作覆盖全部链骨，无条件挂起所有 MMD 近似 IK 与原生 CCD，
+ * 避免 iTaSC 继续把腿解向 足IK 目标、与烘焙动作的纯 FK 结果互相覆盖。
+ * 手动 GPU 烘焙（WM_OT_mmd_bake_motion）完成后调用。 */
+int vmd_suspend_all_ik_after_bake(Main *bmain, Object *ob)
+{
+  if (ob->pose == nullptr) {
+    return 0;
+  }
+  int suspended = 0;
+  for (bPoseChannel *pchan = static_cast<bPoseChannel *>(ob->pose->chanbase.first);
+       pchan != nullptr;
+       pchan = pchan->next)
+  {
+    for (bConstraint *con = static_cast<bConstraint *>(pchan->constraints.first);
+         con != nullptr;
+         con = con->next)
+    {
+      if (strcmp(con->name, "MMD_IK_Approx") != 0 && strcmp(con->name, "MMD_IK_Limit") != 0) {
+        continue;
+      }
+      if (con->enforce != 0.0f) {
+        con->enforce = 0.0f;
+        suspended++;
+      }
+    }
+  }
+
+  /* 原生 CCD V8/V2 一并禁用。 */
+  io::pmx::PMXBoneIKDefinitionSet ik_def;
+  if (io::pmx::read_bone_ik_definition(ob->id, ik_def)) {
+    bArmature *arm = id_cast<bArmature *>(ob->data);
+    if (arm != nullptr) {
+      for (const io::pmx::PMXBoneIKDefinition &def : ik_def.ik_bones) {
+        Bone *ik_bone = BKE_armature_find_bone_name(arm, def.bone_name.c_str());
+        if (ik_bone != nullptr) {
+          mmd::mmd_native_ik_set_enabled(*ik_bone, false);
+        }
+      }
+    }
+  }
+
+  if (suspended > 0) {
+    DEG_id_tag_update_ex(bmain, &ob->id, ID_RECALC_GEOMETRY | ID_RECALC_TRANSFORM);
+    DEG_relations_tag_update(bmain);
+  }
+  return suspended;
+}
+
 void WM_OT_vmd_import(wmOperatorType *ot)
 {
   ot->name = "Import VMD";
@@ -1369,12 +1137,6 @@ void WM_OT_vmd_import(wmOperatorType *ot)
                   true,
                   "VMD Native Bezier",
                   "Use VMD-embedded bezier interpolation for bone tracks instead of linear");
-  RNA_def_boolean(ot->srna,
-                  "auto_bake_gpu",
-                  true,
-                  "Auto GPU Bake",
-                  "After import, run the GPU CCD bake automatically and assign the "
-                  "resulting FK Action (only for models with PMX IK definitions)");
   WM_operator_properties_id_lookup(ot, false);
 
   PropertyRNA *prop = RNA_def_string(ot->srna, "filter_glob", "*.vmd", 0, "Extension Filter", "");
