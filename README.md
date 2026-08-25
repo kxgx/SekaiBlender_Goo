@@ -90,7 +90,7 @@ Keep the extracted folder intact: the executables load the `5.3` runtime directo
 | PMX, MMD and VMD direct tests | 170 passed, 11 environment-gated skips, 0 failed |
 | PMX export round-trip | 2 real PMX models, all 11 sections matched |
 | VMD camera round-trip | Real 27-frame sample, zero resampling error |
-| GPU bake vs native IK legs (耀嘉音 + 你的笑容 VMD, 9871 sub-sampled frames) | Baked FK legs match native IK playback exactly at checked frames |
+| GPU bake vs native IK legs (reference MMD model + VMD, 9871 sub-sampled frames) | Baked FK legs match native IK playback exactly at checked frames |
 | Sub-frame bake (subframes=2) | 9871 keys for 4936 frames, exact .5 half-frame keys; integer frames equal subframes=1 (max diff 6.7e-8), half-frame keys capture bezier midpoints linear interpolation misses by up to 1.7e-3 |
 | FP64 vs FP32 CUDA bake | Max quaternion diff 8.6e-8 (fp64 available via `MMD_BAKE_FP64=1`) |
 | Multi-stream CUDA bake (2 vs 4 streams) | Identical results (max diff 1.2e-7) |
