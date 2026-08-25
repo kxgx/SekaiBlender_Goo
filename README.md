@@ -21,6 +21,14 @@
 
 > SekaiBlender is a source-level Blender branch for MMD creators. It is a standalone application, not an add-on, and it does not replace an existing Blender installation.
 
+## ⚠️ 免责声明 / Disclaimer
+
+> **本软件（SekaiBlender Goo）由 AI 大量修改，不保证功能正常且稳定，仅供学习与研究使用，请勿用于生产环境或重要数据。**
+>
+> **This software has been substantially modified by AI. No guarantee is made that it works correctly or runs stably; it is provided for learning and research only and should not be used in production or with important data.**
+>
+> **Goo Engine 移植部分基于 Goo Engine 4.4.3（The Goo Engine port is based on Goo Engine 4.4.3）。**
+
 ## Download
 
 A prebuilt Windows x64 package is published on the [Releases](https://github.com/kxgx/SekaiSource_Goo/releases/latest) page, so building from source is optional.
