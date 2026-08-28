@@ -629,15 +629,20 @@ btGeneric6DofSpringConstraint *MMDPhysicsWorld::create_joint_(const MMDJointDefi
   constraint->enableFeedback(true);
 
   /* mmd_tools parity: a joint pair disables collision only when the PMX
-   * `no_collision_group` (a "can NOT collide with group i" mask, bit set = do
-   * not collide) says so — i.e. either body lists the other body's group in its
-   * no-collision mask. mmd_tools defaults `disable_collisions=False` and only
-   * flips it to True for such pairs (Model.buildRigids). */
+   * `no_collision_group` says the two bodies must not collide. mmd_tools maps the
+   * raw 16-bit PMX value into a per-group "can NOT collide with" bool vector with
+   * the INVERTED convention (the plugin stores raw_bit==0 as a True "do not
+   * collide" entry — see pmx_importer `collision_group_mask=[raw & (1<<i)==0 ...]`).
+   * So a body "must not collide with group n" exactly when raw bit n is ZERO, i.e.
+   * `~no_collision_group` bit n is set. mmd_tools defaults `disable_collisions=False`
+   * and only flips it to True for such pairs (Model.buildRigids). */
   const RigidBodyRuntime &runtime_a = body_runtimes_[def.rigid_a_index];
   const RigidBodyRuntime &runtime_b = body_runtimes_[def.rigid_b_index];
+  const uint16_t disabled_a = uint16_t(0xFFFFu & ~runtime_a.no_collision_group);
+  const uint16_t disabled_b = uint16_t(0xFFFFu & ~runtime_b.no_collision_group);
   const bool disable_collisions =
-      (runtime_a.no_collision_group & runtime_b.collision_group) != 0 ||
-      (runtime_b.no_collision_group & runtime_a.collision_group) != 0;
+      (disabled_a & runtime_b.collision_group) != 0 ||
+      (disabled_b & runtime_a.collision_group) != 0;
   dynamics_world_->addConstraint(constraint, disable_collisions);
   return constraint;
 }
@@ -1613,15 +1618,16 @@ void MMDPhysicsWorld::apply_mmd_tools_ncc_()
 
   for (int a = 0; a < int(body_runtimes_.size()); ++a) {
     RigidBodyRuntime &body_a = body_runtimes_[a];
-    /* Bits set in no_collision_group = groups this body must NOT collide with
-     * (mmd_tools "can NOT collide with" mask). */
-    const uint16_t disabled_a = body_a.no_collision_group;
+    /* "Must not collide with group n" entry (mmd_tools inverted convention):
+     * raw PMX bit n == 0 -> disable collisions with group n -> ~no_collision_group
+     * bit n is set. */
+    const uint16_t disabled_a = uint16_t(0xFFFFu & ~body_a.no_collision_group);
     for (int b = a + 1; b < int(body_runtimes_.size()); ++b) {
       RigidBodyRuntime &body_b = body_runtimes_[b];
-      const uint16_t disabled_b = body_b.no_collision_group;
+      const uint16_t disabled_b = uint16_t(0xFFFFu & ~body_b.no_collision_group);
       /* Pair should NOT collide when either body lists the OTHER body's group in
-       * its "no-collision-with" mask, i.e. bit(body_b.collision_group) set in
-       * disabled_a, OR bit(body_a.collision_group) set in disabled_b. */
+       * its "must-not-collide" mask (i.e. ~no_collision_group bit of the other
+       * body's group is set). */
       const bool mask_candidate =
           (disabled_a & body_b.collision_group) != 0 ||
           (disabled_b & body_a.collision_group) != 0;
