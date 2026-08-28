@@ -17,7 +17,11 @@ struct bArmature;
 namespace blender {
 
 struct Collection;
+struct Depsgraph;
+struct Main;
+struct Object;
 struct ReportList;
+struct Scene;
 
 }  // namespace blender
 
@@ -186,6 +190,40 @@ bool deserialize_physics_definition(const Collection &model_root,
 bool write_physics_definition_json(const MMDPhysicsDefinition &definition,
                                    const char *filepath,
                                    ReportList *reports);
+
+/** Build Blender-native Rigid Body objects (one mesh object per MMD rigid body)
+ * and Joint constraints from a persisted definition, mirroring the mmd_tools
+ * `build_rig` flow. Every rigid body object is registered on the Scene's native
+ * RigidBodyWorld (`BKE_rigidbody_create_object`), and every joint is registered
+ * as a native constraint (`BKE_rigidbody_create_constraint`). The Scene's native
+ * RigidBodyWorld (and its object/constraint group collections) is created if it
+ * does not already exist so the result can be baked with Blender's ptcache.
+ *
+ * \param armature: The MMD model armature (used as the parent collection owner).
+ * \param model_collection: The PMX model root collection (display parent).
+ */
+bool create_native_rigid_bodies(Main *bmain,
+                                Scene *scene,
+                                Object *armature,
+                                Collection *model_collection,
+                                const MMDPhysicsDefinition &definition,
+                                ReportList *reports);
+
+/** After a native rigid-body ptcache bake, write the baked dynamic rigid-body
+ * transforms back to the bound bones (mmd_tools `updateRigid` for physics_type
+ * 1/2), so the Armature/mesh follow the simulated cloth instead of only the VMD
+ * action. Static bodies (physics_type 0) are already bone-parented by
+ * #create_native_rigid_bodies and follow the animation automatically.
+ *
+ * This bakes one keyframe per physics-bearing pose bone per frame in
+ * [scene->r.sfra, scene->r.efra] on the Armature's existing Action.
+ */
+bool bake_rigidbody_physics_to_bones(Main *bmain,
+                                     Scene *scene,
+                                     Object *armature,
+                                     const MMDPhysicsDefinition &definition,
+                                     ReportList *reports,
+                                     Depsgraph *depsgraph);
 
 /** Validate a persisted definition against the current Armature data. */
 MMDPhysicsMappingReport validate_physics_mapping(const MMDPhysicsDefinition &definition,

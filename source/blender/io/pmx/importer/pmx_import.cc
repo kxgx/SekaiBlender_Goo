@@ -309,6 +309,32 @@ void importer_main(bContext *C, PMXImportParams &params)
           const mmd_physics::MMDPhysicsDebugReport debug_report =
               mmd_physics::build_physics_debug_report(persisted_definition, mapping_report);
           report_physics_debug(debug_report, CTX_wm_reports(C));
+
+          /* --- Phase 2B-2: Build Blender-native Rigid Body objects (mmd_tools
+           * `build_rig` equivalent) so the imported model can be simulated with
+           * Blender's native Rigid Body + ptcache.bake instead of Goo's own
+           * Bullet world. Only build when the definition is valid; the native
+           * RigidBodyWorld is created by this call. --- */
+          if (mapping_report.mapping_valid &&
+              mmd_physics::create_native_rigid_bodies(
+                  bmain,
+                  scene,
+                  ctx.armature_obj,
+                  ctx.model_collection,
+                  persisted_definition,
+                  CTX_wm_reports(C)))
+          {
+            BKE_reportf(CTX_wm_reports(C),
+                        RPT_INFO,
+                        "PMX native rigid bodies built: %zu bodies, %zu joints",
+                        persisted_definition.rigid_bodies.size(),
+                        persisted_definition.joints.size());
+          }
+          else {
+            BKE_report(CTX_wm_reports(C),
+                       RPT_WARNING,
+                       "PMX native rigid bodies were not built: physics definition is not valid");
+          }
         }
         else {
           BKE_report(CTX_wm_reports(C),

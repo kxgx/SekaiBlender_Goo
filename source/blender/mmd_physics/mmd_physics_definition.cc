@@ -5,13 +5,42 @@
 #include "mmd_physics_definition.hh"
 
 #include "BKE_armature.hh"
+#include "BKE_collection.hh"
+#include "BKE_constraint.h"
 #include "BKE_idprop.hh"
+#include "BKE_lib_id.hh"
+#include "BKE_main.hh"
+#include "BKE_mesh.h"
+#include "BKE_object.hh"
 #include "BKE_report.hh"
+#include "BKE_rigidbody.h"
+#include "BKE_scene.hh"
+#include "BKE_pose.hh"
+#include "BKE_anim_data.hh"
+#include "BKE_fcurve.hh"
+
+#include "DEG_depsgraph.hh"
+#include "DEG_depsgraph_build.hh"
+
+#include "ANIM_action.hh"
+#include "ANIM_fcurve.hh"
+#include "ANIM_keyframing.hh"
 
 #include "BLI_fileops.hh"
+#include "BLI_math_matrix_c.hh"
+#include "BLI_math_rotation_c.hh"
+#include "BLI_math_vector.hh"
+#include "BLI_math_vector_c.hh"
+#include "BLI_string.hh"
 #include "BLI_vector.hh"
 #include "MEM_guardedalloc.h"
+#include "DNA_anim_types.h"
 #include "DNA_collection_types.h"
+#include "DNA_constraint_types.h"
+#include "DNA_mesh_types.h"
+#include "DNA_object_types.h"
+#include "DNA_rigidbody_types.h"
+#include "DNA_scene_types.h"
 
 #include "../io/pmx/intern/pmx_types.h"
 
@@ -20,8 +49,11 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <map>
+#include <set>
 #include <sstream>
 #include <system_error>
+#include <utility>
 
 #include "BLI_string_ref.hh"
 
@@ -1385,6 +1417,1012 @@ MMDPhysicsDebugReport build_physics_debug_report(
                         report.invalid_rigid_body_binding_count == 0 &&
                         report.resolved_joint_count == report.joint_count;
   return report;
+}
+
+namespace {
+
+/** Map a PMX rigid-body shape type (0=SPHERE, 1=BOX, 2=CAPSULE) to the Blender
+ * native #eRigidBody_Shape value (RB_SHAPE_SPHERE=1, RB_SHAPE_BOX=0,
+ * RB_SHAPE_CAPSULE=2). */
+eRigidBody_Shape mmd_shape_to_blender_shape(const uint8_t shape_type)
+{
+  switch (shape_type) {
+    case 1:
+      return RB_SHAPE_BOX;
+    case 2:
+      return RB_SHAPE_CAPSULE;
+    case 0:
+    default:
+      return RB_SHAPE_SPHERE;
+  }
+}
+
+/** Compute the full bounding-box extents (in Blender units) that a placeholder
+ * display mesh should span so the native rigid-body collider (derived from the
+ * object bounding box) matches the MMD shape size, mirroring mmd_tools which
+ * doubles the sphere size (PMX stores the radius) while keeping box/capsule as
+ * full dimensions. */
+void mmd_shape_bounds(const MMDRigidBodyDefinition &rigid, float r_bounds[3])
+{
+  const float s0 = std::max(rigid.shape_size[0], 0.0001f);
+  const float s1 = std::max(rigid.shape_size[1], 0.0001f);
+  const float s2 = std::max(rigid.shape_size[2], 0.0001f);
+  switch (rigid.shape_type) {
+    case 0: {
+      /* Sphere: PMX stores the radius; the native sphere collider derives its
+       * radius from half the largest bounding dimension, so use the diameter. */
+      const float diameter = s0 * 2.0f;
+      r_bounds[0] = r_bounds[1] = r_bounds[2] = diameter;
+      break;
+    }
+    case 1:
+      r_bounds[0] = s0;
+      r_bounds[1] = s1;
+      r_bounds[2] = s2;
+      break;
+    default:
+      r_bounds[0] = s0;
+      r_bounds[1] = s1;
+      r_bounds[2] = s2;
+      break;
+  }
+}
+
+/** Create an 8-vertex placeholder box mesh spanning `bounds` for display. The
+ * native rigid-body collision shape (BOX/SPHERE/CAPSULE) is derived from the
+ * object bounding box, so the mesh only needs to provide those extents. */
+Mesh *create_display_box_mesh(Main *bmain, const char *name, const float bounds[3])
+{
+  const float hx = bounds[0] * 0.5f;
+  const float hy = bounds[1] * 0.5f;
+  const float hz = bounds[2] * 0.5f;
+
+  Mesh *tmp = BKE_mesh_new_nomain(8, 0, 0, 0);
+  MutableSpan<float3> positions = tmp->vert_positions_for_write();
+  const float coords[8][3] = {
+      {-hx, -hy, -hz}, {hx, -hy, -hz}, {-hx, hy, -hz}, {hx, hy, -hz},
+      {-hx, -hy, hz},  {hx, -hy, hz},  {-hx, hy, hz},  {hx, hy, hz},
+  };
+  for (int i = 0; i < 8; i++) {
+    positions[i] = float3(coords[i][0], coords[i][1], coords[i][2]);
+  }
+  tmp->tag_positions_changed();
+
+  Mesh *mesh_in_main = BKE_mesh_add(bmain, name);
+  BKE_mesh_nomain_to_mesh(tmp, mesh_in_main, nullptr);
+  return mesh_in_main;
+}
+
+/** Build a bone's REST matrix in Armature space by walking the parent chain and
+ * composing `bone_mat / bone->head` (+ parent length offset), mirroring
+ * `BKE_armature_where_is_bone`. This does not rely on `Bone::arm_mat` being
+ * pre-populated (which can be all-zero on the original Armature data). */
+void compute_bone_rest_armature_matrix(const Bone *bone, float r_mat[4][4])
+{
+  const Bone *chain[64];
+  int n = 0;
+  for (const Bone *b = bone; b != nullptr && n < 64; b = b->parent) {
+    chain[n++] = b;
+  }
+  if (n == 0) {
+    unit_m4(r_mat);
+    return;
+  }
+  /* Root bone: rotation from bone_mat, translation at head. */
+  float m[4][4];
+  copy_m4_m3(m, chain[n - 1]->bone_mat);
+  copy_v3_v3(m[3], chain[n - 1]->head);
+  /* Compose children down to the target bone. */
+  for (int i = n - 2; i >= 0; i--) {
+    float offs[4][4];
+    BKE_bone_offset_matrix_get(chain[i], offs);
+    float t[4][4];
+    mul_m4_m4m4(t, m, offs);
+    copy_m4_m4(m, t);
+  }
+  copy_m4_m4(r_mat, m);
+}
+
+/** Add a Copy Transforms (type 1) or Copy Rotation (type 2) constraint on a pose
+ * bone that targets `target_obj`, so the simulated rigid-body motion drives the
+ * bone (and therefore the mesh) — the mmd_tools `mmd_tools_rigid_track`
+ * mechanism. */
+void add_bone_copy_constraint(Object *armature,
+                              bPoseChannel *pchan,
+                              Object *target_obj,
+                              const bool rotation_only)
+{
+  if (armature == nullptr || pchan == nullptr || target_obj == nullptr) {
+    return;
+  }
+  bConstraint *con = BKE_constraint_add_for_pose(
+      armature,
+      pchan,
+      "mmd_tools_rigid_track",
+      rotation_only ? CONSTRAINT_TYPE_ROTLIKE : CONSTRAINT_TYPE_TRANSLIKE);
+  if (con == nullptr) {
+    return;
+  }
+  con->enforce = 1.0f;
+  /* Active (not muted): the constraint drives the bone whenever the simulated
+   * rigid-body object moves (mmd_tools unmutes `mmd_tools_rigid_track` during
+   * physics; we keep it active so the ptcache bake drives the bone). */
+  con->flag &= ~CONSTRAINT_OFF;
+  con->ownspace = CONSTRAINT_SPACE_WORLD;
+  con->tarspace = CONSTRAINT_SPACE_WORLD;
+  if (rotation_only) {
+    bRotateLikeConstraint *data = static_cast<bRotateLikeConstraint *>(con->data);
+    data->tar = target_obj;
+  }
+  else {
+    bTransLikeConstraint *data = static_cast<bTransLikeConstraint *>(con->data);
+    data->tar = target_obj;
+  }
+}
+
+
+void compute_object_world_matrix(Object *obj, float r_world[4][4])
+{
+  if (obj == nullptr) {
+    unit_m4(r_world);
+    return;
+  }
+  const Object *chain[64];
+  int n = 0;
+  for (const Object *cur = obj; cur != nullptr && n < 64; cur = cur->parent) {
+    chain[n++] = cur;
+  }
+  if (n == 0) {
+    unit_m4(r_world);
+    return;
+  }
+  float world[4][4];
+  BKE_object_matrix_local_get(const_cast<Object *>(chain[n - 1]), world);
+  for (int i = n - 2; i >= 0; i--) {
+    float local[4][4];
+    BKE_object_matrix_local_get(const_cast<Object *>(chain[i]), local);
+    float tmp[4][4];
+    mul_m4_m4m4(tmp, world, local);
+    copy_m4_m4(world, tmp);
+  }
+  copy_m4_m4(r_world, world);
+}
+
+/** World-space rest matrix of a rigid body: the definition (blender_import_space
+ * local coords) carried into world by the Armature/model-root world matrix. */
+void rigid_body_world_rest_matrix(const float arm_world[4][4],
+                                  const MMDRigidBodyDefinition &rigid,
+                                  float r_world[4][4])
+{
+  float def_local[4][4];
+  eulO_to_mat4(def_local, rigid.rotation.data(), EULER_ORDER_YXZ);
+  copy_v3_v3(def_local[3], rigid.position.data());
+  mul_m4_m4m4(r_world, arm_world, def_local);
+}
+
+void update_native_rigid_object_transform(Object *ob,
+                                          const float arm_world[4][4],
+                                          const MMDRigidBodyDefinition &rigid)
+{
+  float world[4][4];
+  rigid_body_world_rest_matrix(arm_world, rigid, world);
+  copy_v3_v3(ob->loc, world[3]);
+  /* mmd_tools sets rotation_mode="YXZ"; the object/depsgraph use this order. */
+  ob->rotmode = ROT_MODE_YXZ;
+  mat4_to_eulO(ob->rot, EULER_ORDER_YXZ, world);
+}
+
+std::string rigid_body_object_name(const MMDRigidBodyDefinition &rigid, const int index)
+{
+  if (!rigid.name_local.empty()) {
+    return rigid.name_local;
+  }
+  return "MMD_Rigid_" + std::to_string(index);
+}
+
+std::string joint_object_name(const MMDJointDefinition &joint, const int index)
+{
+  if (!joint.name_local.empty()) {
+    return joint.name_local;
+  }
+  return "MMD_Joint_" + std::to_string(index);
+}
+
+/** Bind a static (physics_type 0) rigid body object to its bone so the collider
+ * follows the animated skeleton (mmd_tools: BONE PARENT + kinematic). The object
+ * keeps its rest world matrix via `parentinv`; as the bone moves (VMD pose) the
+ * collider tracks it, and because the body is passive/kinematic it does not
+ * participate in the physics response.
+ *
+ * \param arm_world: The Armature's (model-root) world matrix, computed reliably
+ * so the collider rest position matches the mesh even before depsgraph eval. */
+void setup_static_bone_parent(Object *ob,
+                              Object *armature,
+                              const float arm_world[4][4],
+                              const MMDRigidBodyDefinition &rigid)
+{
+  if (armature == nullptr || armature->type != OB_ARMATURE || armature->data == nullptr ||
+      !rigid.bone_resolved || rigid.blender_bone_name.empty())
+  {
+    update_native_rigid_object_transform(ob, arm_world, rigid);
+    return;
+  }
+  bArmature *arm = reinterpret_cast<bArmature *>(armature->data);
+  Bone *bone = BKE_armature_find_bone_name(arm, rigid.blender_bone_name.c_str());
+  if (bone == nullptr) {
+    update_native_rigid_object_transform(ob, arm_world, rigid);
+    return;
+  }
+
+  /* Rigid-body rest WORLD matrix (definition local coords carried into world). */
+  float R_rest[4][4];
+  rigid_body_world_rest_matrix(arm_world, rigid, R_rest);
+
+  /* Bone parent matrix at rest (armature space); Blender parents at the bone tail. */
+  float bone_mat[4][4];
+  copy_m4_m4(bone_mat, bone->arm_mat);
+  float tail[3];
+  copy_v3_v3(tail, bone->arm_mat[1]);
+  mul_v3_fl(tail, bone->length * ob->parent_bone_head_tail_factor);
+  add_v3_v3(bone_mat[3], tail);
+
+  /* World-space bone parent matrix. */
+  float parent_world[4][4];
+  mul_m4_m4m4(parent_world, arm_world, bone_mat);
+
+  float pinv[4][4];
+  invert_m4_m4(pinv, parent_world);
+  mul_m4_m4m4(ob->parentinv, pinv, R_rest);
+
+  ob->parent = armature;
+  ob->partype = PARBONE;
+  STRNCPY(ob->parsubstr, rigid.blender_bone_name.c_str());
+
+  /* Local transform is identity; `parentinv` carries the rest offset. */
+  zero_v3(ob->loc);
+  ob->rotmode = ROT_MODE_QUAT;
+  ob->quat[0] = 1.0f;
+  ob->quat[1] = ob->quat[2] = ob->quat[3] = 0.0f;
+  ob->scale[0] = ob->scale[1] = ob->scale[2] = 1.0f;
+}
+
+/** Find a direct child collection of `parent` by name. */
+Collection *find_child_collection(Collection *parent, const char *name)
+{
+  if (parent == nullptr) {
+    return nullptr;
+  }
+  for (CollectionChild *child = static_cast<CollectionChild *>(parent->children.first);
+       child != nullptr;
+       child = child->next)
+  {
+    if (child->collection != nullptr && STREQ(child->collection->id.name + 2, name)) {
+      return child->collection;
+    }
+  }
+  return nullptr;
+}
+
+/** Remove every native rigid body object / joint / NCC object this model already
+ * has (they live in the "Rigid Bodies" collection under `model_collection`), so
+ * #create_native_rigid_bodies is idempotent: calling `build_rig` after a PMX
+ * import must not double the body count. */
+void cleanup_existing_native_rigid_bodies(Main *bmain, Scene *scene, Collection *model_collection)
+{
+  if (bmain == nullptr || scene == nullptr || model_collection == nullptr) {
+    return;
+  }
+  Collection *rigid_col = find_child_collection(model_collection, "Rigid Bodies");
+  if (rigid_col == nullptr) {
+    return;
+  }
+  std::vector<Object *> to_remove;
+  FOREACH_COLLECTION_OBJECT_RECURSIVE_BEGIN (rigid_col, ob) {
+    to_remove.push_back(ob);
+  }
+  FOREACH_COLLECTION_OBJECT_RECURSIVE_END;
+  for (Object *ob : to_remove) {
+    if (ob->rigidbody_object != nullptr) {
+      /* Remove rigid-body settings and this object from the RBW group collection. */
+      BKE_rigidbody_remove_object(bmain, scene, ob, false);
+    }
+    if (ob->rigidbody_constraint != nullptr) {
+      BKE_rigidbody_remove_constraint(bmain, scene, ob, false);
+    }
+    /* Delete the object; BKE_id_delete unlinks it from every collection it is in
+     * (the "Rigid Bodies" display collection, master collection, etc.) and frees it. */
+    BKE_id_delete(bmain, ob);
+  }
+  if (RigidBodyWorld *rbw = BKE_rigidbody_get_world(scene)) {
+    BKE_rigidbody_cache_reset(rbw);
+  }
+}
+
+}  // namespace
+
+bool create_native_rigid_bodies(Main *bmain,
+                                Scene *scene,
+                                Object *armature,
+                                Collection *model_collection,
+                                const MMDPhysicsDefinition &definition,
+                                ReportList *reports)
+{
+  if (bmain == nullptr || scene == nullptr) {
+    return false;
+  }
+
+  auto report = [reports](const std::string &message) {
+    if (reports != nullptr) {
+      BKE_report(reports, RPT_WARNING, message.c_str());
+    }
+  };
+
+  /* 1. Ensure the Scene has a native RigidBodyWorld and its object/constraint
+   * group collections (these carry the bodies/constraints into the sim). */
+  RigidBodyWorld *rbw = BKE_rigidbody_get_world(scene);
+  if (rbw == nullptr) {
+    rbw = BKE_rigidbody_create_world(scene);
+    if (rbw == nullptr) {
+      report("MMD physics: failed to create the native RigidBodyWorld");
+      return false;
+    }
+    BKE_rigidbody_validate_sim_world(scene, rbw, false);
+    scene->rigidbody_world = rbw;
+  }
+  if (rbw->group == nullptr) {
+    rbw->group = BKE_collection_add(bmain, nullptr, "RigidBodyWorld");
+    id_us_plus(&rbw->group->id);
+  }
+  if (rbw->constraints == nullptr) {
+    rbw->constraints = BKE_collection_add(bmain, nullptr, "RigidBodyConstraints");
+    id_us_plus(&rbw->constraints->id);
+  }
+
+  /* 1a. Idempotency: drop any native rigid body / joint / NCC objects this model
+   * already owns so a repeated build_rig (after an import that already built them)
+   * does not duplicate bodies. */
+  cleanup_existing_native_rigid_bodies(bmain, scene, model_collection);
+
+  /* 2. Display collection under the model root (so the helper objects are
+   * organised under the imported PMX model in the Outliner). Reuse the existing
+   * "Rigid Bodies" collection when present to avoid duplicates. */
+  Collection *rigid_collection = nullptr;
+  if (model_collection != nullptr) {
+    rigid_collection = find_child_collection(model_collection, "Rigid Bodies");
+    if (rigid_collection == nullptr) {
+      rigid_collection = BKE_collection_add(bmain, model_collection, "Rigid Bodies");
+    }
+  }
+
+  /* The Armature/model-root world matrix. The definition positions are in the
+   * model's import space, so every rigid body is placed in world by multiplying
+   * with this matrix (reliable even before depsgraph evaluation). */
+  float arm_world[4][4];
+  compute_object_world_matrix(armature, arm_world);
+
+  /* 3. Create one native rigid body object per MMD rigid body. */
+  const int rigid_count = int(definition.rigid_bodies.size());
+  std::vector<Object *> rigid_objects(rigid_count, nullptr);
+  std::vector<std::array<float, 3>> rigid_positions(rigid_count, {0.0f, 0.0f, 0.0f});
+  std::vector<float> rigid_ranges(rigid_count, 0.0f);
+  int created_rigid_bodies = 0;
+
+  for (int i = 0; i < rigid_count; i++) {
+    const MMDRigidBodyDefinition &rigid = definition.rigid_bodies[i];
+    if (rigid.pmx_index != i) {
+      continue;
+    }
+    const std::string object_name = rigid_body_object_name(rigid, i);
+
+    Object *ob = BKE_object_add_only_object(bmain, OB_MESH, object_name.c_str());
+    if (ob == nullptr) {
+      continue;
+    }
+
+    /* Placeholder box mesh whose bounding box matches the MMD collider size. */
+    float shape_bounds[3];
+    mmd_shape_bounds(rigid, shape_bounds);
+    rigid_ranges[i] = std::max({shape_bounds[0], shape_bounds[1], shape_bounds[2]});
+    /* Store the body's WORLD position (for the NCC distance test). */
+    float world_pos[4][4];
+    rigid_body_world_rest_matrix(arm_world, rigid, world_pos);
+    rigid_positions[i] = {world_pos[3][0], world_pos[3][1], world_pos[3][2]};
+    Mesh *mesh = create_display_box_mesh(bmain, object_name.c_str(), shape_bounds);
+    ob->data = &mesh->id;
+
+    /* Static bodies are bone-parented to the animated skeleton (mmd_tools
+     * updateRigid for type 0), so the collider follows the bone. Dynamic bodies
+     * are free objects whose simulated motion is transferred back to their bones
+     * after the bake (see bake_rigidbody_physics_to_bones). */
+    if (rigid.physics_type == 0) {
+      setup_static_bone_parent(ob, armature, arm_world, rigid);
+    }
+    else {
+      update_native_rigid_object_transform(ob, arm_world, rigid);
+    }
+
+    if (rigid_collection != nullptr) {
+      BKE_collection_object_add(bmain, rigid_collection, ob);
+    }
+    BKE_collection_object_add(bmain, rbw->group, ob);
+
+    /* Record the rigid-body index on the object so the post-bake transfer can map
+     * a baked body back to its definition entry and bound bone. */
+    IDProperty *obj_props = IDP_ID_system_properties_ensure(&ob->id);
+    IDProperty *idx_prop = IDP_GetPropertyTypeFromGroup(obj_props, "mmd_physics_rigid_index", IDP_INT);
+    if (idx_prop != nullptr) {
+      IDP_int_set(idx_prop, i);
+    }
+    else {
+      IDP_AddToGroup(obj_props, IDP_NewInt(i, "mmd_physics_rigid_index"));
+    }
+    IDProperty *type_props = IDP_GetPropertyTypeFromGroup(obj_props, "mmd_physics_rigid_type", IDP_INT);
+    if (type_props != nullptr) {
+      IDP_int_set(type_props, rigid.physics_type);
+    }
+    else {
+      IDP_AddToGroup(obj_props, IDP_NewInt(rigid.physics_type, "mmd_physics_rigid_type"));
+    }
+
+    /* Register the object with the native rigid body settings. */
+    const eRigidBodyOb_Type rbo_type = (rigid.physics_type == 0) ? RBO_TYPE_PASSIVE :
+                                                                   RBO_TYPE_ACTIVE;
+    RigidBodyOb *rbo = BKE_rigidbody_create_object(scene, ob, rbo_type);
+    if (rbo == nullptr) {
+      continue;
+    }
+    rbo->shape = mmd_shape_to_blender_shape(rigid.shape_type);
+    rbo->mass = rigid.mass;
+    rbo->friction = rigid.friction;
+    rbo->restitution = rigid.restitution;
+    rbo->lin_damping = rigid.linear_damping;
+    rbo->ang_damping = rigid.angular_damping;
+    /* Set every body's collision collections to the full range so bodies collide
+     * with each other by default; per-pair non-collision is handled by the NCC
+     * (non-collision constraint) objects below, exactly like mmd_tools. Blender's
+     * native collision filter is `(col_groups_a & col_groups_b) != 0` (see the
+     * RB filter callback in rb_bullet_api.cpp), so a shared bit means "may collide"
+     * and a disable-collisions constraint removes individual pairs at narrowphase. */
+    rbo->col_groups = 0xFFFF;
+    if (rigid.physics_type == 0) {
+      rbo->type = RBO_TYPE_PASSIVE;
+      rbo->flag |= RBO_FLAG_KINEMATIC;
+    }
+    else {
+      rbo->type = RBO_TYPE_ACTIVE;
+    }
+    /* Keep the physics body's initial transform in sync with the object so the
+     * first evaluated state is correct even before the depsgraph fills in the
+     * object matrix. Uses the WORLD rest matrix (definition carried into world). */
+    float world_rest[4][4];
+    rigid_body_world_rest_matrix(arm_world, rigid, world_rest);
+    mat4_to_loc_quat(rbo->pos, rbo->orn, world_rest);
+
+    /* Dynamic bodies: drive the bound bone with a Copy Transforms / Copy
+     * Rotation constraint targeting this rigid-body object, so the simulated
+     * rigid-body motion drives the bone (and the mesh). This is the mmd_tools
+     * `mmd_tools_rigid_track` mechanism and replaces the keyframe transfer. */
+    if (rigid.physics_type != 0 && rigid.bone_resolved && !rigid.blender_bone_name.empty()) {
+      bPoseChannel *pchan = BKE_pose_channel_find_name(armature->pose,
+                                                       rigid.blender_bone_name.c_str());
+      if (pchan != nullptr) {
+        add_bone_copy_constraint(armature, pchan, ob, rigid.physics_type == 2);
+      }
+    }
+
+    rigid_objects[i] = ob;
+    created_rigid_bodies++;
+    DEG_id_tag_update_ex(bmain, &ob->id, ID_RECALC_TRANSFORM);
+  }
+
+  /* 4. Create one native joint (constraint) per MMD joint. */
+  const int joint_count = int(definition.joints.size());
+  int created_joints = 0;
+  /* Map an ordered rigid-body pair (a<b) to the rigid-body constraint that
+   * connects them, so the NCC pass can enable `disable_collisions` on joints
+   * linking a "should-not-collide" pair (mmd_tools buildRigids behaviour). */
+  using RigidPair = std::pair<int, int>;
+  std::map<RigidPair, RigidBodyCon *> joint_constraint_for_pair;
+  for (int i = 0; i < joint_count; i++) {
+    const MMDJointDefinition &joint = definition.joints[i];
+    if (joint.pmx_index != i) {
+      continue;
+    }
+    if (joint.rigid_a_index < 0 || joint.rigid_a_index >= rigid_count ||
+        joint.rigid_b_index < 0 || joint.rigid_b_index >= rigid_count)
+    {
+      report("MMD physics: joint[" + std::to_string(i) +
+             "] has out-of-range rigid endpoints; skipped");
+      continue;
+    }
+    Object *ob_a = rigid_objects[joint.rigid_a_index];
+    Object *ob_b = rigid_objects[joint.rigid_b_index];
+    if (ob_a == nullptr || ob_b == nullptr) {
+      report("MMD physics: joint[" + std::to_string(i) +
+             "] endpoints were not created; skipped");
+      continue;
+    }
+    const std::string object_name = joint_object_name(joint, i);
+    Object *joint_ob = BKE_object_add_only_object(bmain, OB_EMPTY, object_name.c_str());
+    if (joint_ob == nullptr) {
+      continue;
+    }
+    copy_v3_v3(joint_ob->loc, joint.position.data());
+    joint_ob->rotmode = ROT_MODE_YXZ;
+    copy_v3_v3(joint_ob->rot, joint.rotation.data());
+
+    if (rigid_collection != nullptr) {
+      BKE_collection_object_add(bmain, rigid_collection, joint_ob);
+    }
+    BKE_collection_object_add(bmain, rbw->constraints, joint_ob);
+
+    /* mmd_tools uses a GENERIC_SPRING constraint (6-DOF with springs). */
+    RigidBodyCon *rbc = BKE_rigidbody_create_constraint(scene, joint_ob, RBC_TYPE_6DOF_SPRING);
+    if (rbc == nullptr) {
+      continue;
+    }
+    rbc->ob1 = ob_a;
+    rbc->ob2 = ob_b;
+    rbc->spring_type = RBC_SPRING_TYPE1; /* btGeneric6DofSpringConstraint */
+
+    rbc->limit_lin_x_lower = joint.translation_min[0];
+    rbc->limit_lin_x_upper = joint.translation_max[0];
+    rbc->limit_lin_y_lower = joint.translation_min[1];
+    rbc->limit_lin_y_upper = joint.translation_max[1];
+    rbc->limit_lin_z_lower = joint.translation_min[2];
+    rbc->limit_lin_z_upper = joint.translation_max[2];
+    rbc->limit_ang_x_lower = joint.rotation_min[0];
+    rbc->limit_ang_x_upper = joint.rotation_max[0];
+    rbc->limit_ang_y_lower = joint.rotation_min[1];
+    rbc->limit_ang_y_upper = joint.rotation_max[1];
+    rbc->limit_ang_z_lower = joint.rotation_min[2];
+    rbc->limit_ang_z_upper = joint.rotation_max[2];
+
+    rbc->flag |= RBC_FLAG_USE_LIMIT_LIN_X;
+    rbc->flag |= RBC_FLAG_USE_LIMIT_LIN_Y;
+    rbc->flag |= RBC_FLAG_USE_LIMIT_LIN_Z;
+    rbc->flag |= RBC_FLAG_USE_LIMIT_ANG_X;
+    rbc->flag |= RBC_FLAG_USE_LIMIT_ANG_Y;
+    rbc->flag |= RBC_FLAG_USE_LIMIT_ANG_Z;
+    rbc->flag |= RBC_FLAG_USE_SPRING_X;
+    rbc->flag |= RBC_FLAG_USE_SPRING_Y;
+    rbc->flag |= RBC_FLAG_USE_SPRING_Z;
+    rbc->flag |= RBC_FLAG_USE_SPRING_ANG_X;
+    rbc->flag |= RBC_FLAG_USE_SPRING_ANG_Y;
+    rbc->flag |= RBC_FLAG_USE_SPRING_ANG_Z;
+    /* mmd_tools sets disable_collisions=False for joint constraints; the
+     * BKE_rigidbody_create_constraint default enables it, so clear it. */
+    rbc->flag &= ~RBC_FLAG_DISABLE_COLLISIONS;
+
+    rbc->spring_stiffness_x = joint.spring_translation[0];
+    rbc->spring_stiffness_y = joint.spring_translation[1];
+    rbc->spring_stiffness_z = joint.spring_translation[2];
+    rbc->spring_stiffness_ang_x = joint.spring_rotation[0];
+    rbc->spring_stiffness_ang_y = joint.spring_rotation[1];
+    rbc->spring_stiffness_ang_z = joint.spring_rotation[2];
+
+    /* Remember the constraint that links this rigid-body pair so the NCC pass can
+     * flip it to `disable_collisions` when the pair is a should-not-collide one. */
+    const RigidPair key(std::min(joint.rigid_a_index, joint.rigid_b_index),
+                        std::max(joint.rigid_a_index, joint.rigid_b_index));
+    joint_constraint_for_pair[key] = rbc;
+
+    created_joints++;
+    DEG_id_tag_update_ex(bmain, &joint_ob->id, ID_RECALC_TRANSFORM);
+  }
+
+  /* 5. Build non-collision (NCC) constraints, replicating mmd_tools
+   * Model.buildRigids + __createNonCollisionConstraint. For every rigid-body pair
+   * that the PMX collision-group mask marks as "must not collide":
+   *   - if the pair is connected by a joint, turn that joint's disable_collisions
+   *     on (the joint is the collision gate), and
+   *   - otherwise, if the bodies are close enough (the mmd_tools
+   *     non_collision_distance_scale heuristic), create a GENERIC constraint that
+   *     only disables collision (Bullet `addConstraint(con, disableCollisions)`,
+   *     see RB_dworld_add_constraint in rb_bullet_api.cpp).
+   */
+  constexpr float kNonCollisionDistanceScale = 1.5f;
+  int created_ncc = 0;
+  int joint_ncc = 0;
+  std::vector<RigidPair> non_collision_pairs;
+  for (int a = 0; a < rigid_count; a++) {
+    if (rigid_objects[a] == nullptr) {
+      continue;
+    }
+    const uint8_t group_a = definition.rigid_bodies[a].collision_group;
+    /* mmd_tools inverted convention: the plugin imports the raw 16-bit PMX
+     * no_collision_group into a per-group bool vector with
+     * `collision_group_mask[i] = (raw & (1<<i)) == 0`, i.e. a True entry means
+     * "this body does NOT collide with group i", which happens exactly when the
+     * raw bit i is ZERO. So "must not collide with group n" == `~no_collision_group`
+     * bit n set. Using the raw no_collision_group (bit set = not collide) is the
+     * OPPOSITE and makes the skirt avoid the body instead of itself. */
+    const uint16_t mask_a = uint16_t(0xFFFFu & ~definition.rigid_bodies[a].no_collision_group);
+    for (int b = a + 1; b < rigid_count; b++) {
+      if (rigid_objects[b] == nullptr) {
+        continue;
+      }
+      const uint8_t group_b = definition.rigid_bodies[b].collision_group;
+      const uint16_t mask_b = uint16_t(0xFFFFu & ~definition.rigid_bodies[b].no_collision_group);
+      /* mmd_tools semantics: a body does not collide with group i when bit i of
+       * its "must-not-collide" mask (~no_collision_group) is set, so the pair is
+       * "should-not-collide" if either body forbids the other's group. */
+      const bool no_collide = ((mask_a & (uint16_t(1) << group_b)) != 0) ||
+                              ((mask_b & (uint16_t(1) << group_a)) != 0);
+      if (!no_collide) {
+        continue;
+      }
+      const RigidPair key(a, b);
+      const auto joint_it = joint_constraint_for_pair.find(key);
+      if (joint_it != joint_constraint_for_pair.end()) {
+        /* The pair is already rigidly tied by a joint: remove collision there. */
+        joint_it->second->flag |= RBC_FLAG_DISABLE_COLLISIONS;
+        joint_ncc++;
+        continue;
+      }
+      /* mmd_tools creates an NCC object only for nearby bodies. */
+      const float dx = rigid_positions[a][0] - rigid_positions[b][0];
+      const float dy = rigid_positions[a][1] - rigid_positions[b][1];
+      const float dz = rigid_positions[a][2] - rigid_positions[b][2];
+      const float distance = std::sqrt(dx * dx + dy * dy + dz * dz);
+      const float threshold = kNonCollisionDistanceScale * (rigid_ranges[a] + rigid_ranges[b]) *
+                              0.5f;
+      if (distance < threshold) {
+        non_collision_pairs.emplace_back(a, b);
+      }
+    }
+  }
+
+  /* Create one GENERIC (6-DOF, no limits -> free) constraint per non-collision
+   * pair. The constraint only carries `disable_collisions`; its limits are left
+   * disabled so it does not bind the bodies' relative motion. */
+  for (const RigidPair &pair : non_collision_pairs) {
+    const int a = pair.first;
+    const int b = pair.second;
+    const std::string object_name = "NCC_" + std::to_string(a) + "_" + std::to_string(b);
+    Object *ncc_ob = BKE_object_add_only_object(bmain, OB_EMPTY, object_name.c_str());
+    if (ncc_ob == nullptr) {
+      continue;
+    }
+    if (rigid_collection != nullptr) {
+      BKE_collection_object_add(bmain, rigid_collection, ncc_ob);
+    }
+    BKE_collection_object_add(bmain, rbw->constraints, ncc_ob);
+
+    RigidBodyCon *rbc = BKE_rigidbody_create_constraint(scene, ncc_ob, RBC_TYPE_6DOF);
+    if (rbc == nullptr) {
+      continue;
+    }
+    rbc->ob1 = rigid_objects[a];
+    rbc->ob2 = rigid_objects[b];
+    /* The whole point of an NCC object is to disable collision; setting the flag
+     * makes Bullet's addConstraint(con, disableCollisions=true) skip the pair at
+     * narrowphase while leaving the constraint itself free (no limits set). */
+    rbc->flag |= RBC_FLAG_DISABLE_COLLISIONS;
+    created_ncc++;
+    DEG_id_tag_update_ex(bmain, &ncc_ob->id, ID_RECALC_TRANSFORM);
+  }
+
+  DEG_relations_tag_update(bmain);
+  BKE_rigidbody_cache_reset(rbw);
+
+  if (reports != nullptr) {
+    BKE_reportf(reports,
+                RPT_INFO,
+                "MMD physics: built %d native rigid bodies, %d native joints, %d non-collision "
+                "pairs (%d via joint disable, %d via NCC constraint)",
+                created_rigid_bodies,
+                created_joints,
+                joint_ncc + created_ncc,
+                joint_ncc,
+                created_ncc);
+  }
+  return true;
+}
+
+bool bake_rigidbody_physics_to_bones(Main *bmain,
+                                     Scene *scene,
+                                     Object *armature,
+                                     const MMDPhysicsDefinition &definition,
+                                     ReportList *reports,
+                                     Depsgraph *depsgraph)
+{
+  if (bmain == nullptr || scene == nullptr || armature == nullptr ||
+      armature->type != OB_ARMATURE || armature->data == nullptr)
+  {
+    return false;
+  }
+  auto report = [reports](const std::string &message) {
+    if (reports != nullptr) {
+      BKE_report(reports, RPT_WARNING, message.c_str());
+    }
+  };
+  bPose *pose = armature->pose;
+  if (pose == nullptr) {
+    return false;
+  }
+  /* Ensure the bones' rest matrices (arm_mat) are computed on the original
+   * Armature data so the transfer can derive each bone's rest world matrix.
+   * `BKE_armature_where_is` populates `Bone::arm_mat`; without it the values
+   * can be all-zero when reading the original (non-evaluated) Armature. */
+  if (armature->data != nullptr) {
+    BKE_armature_where_is(reinterpret_cast<bArmature *>(armature->data));
+  }
+  RigidBodyWorld *rbw = BKE_rigidbody_get_world(scene);
+  if (rbw == nullptr || rbw->group == nullptr) {
+    report("MMD physics: no native RigidBodyWorld to transfer from");
+    return false;
+  }
+
+  /* Collect dynamic rigid-body objects that are bound to a bone. We need the
+   * baked object (rbo) and the bone to write to. */
+  struct BoneBinding {
+    Object *ob = nullptr;
+    bPoseChannel *pchan = nullptr;
+    float R_rest[4][4] = {};
+    float bone_offset[4][4] = {}; /* R_rest^-1 @ B_rest_world (constant) */
+    float arm_world[4][4] = {};   /* reliable model-root world (parent chain) */
+    float bone_arm_mat[4][4] = {}; /* bone rest matrix in armature space */
+  };
+  std::vector<BoneBinding> bindings;
+
+  const int rigid_count = int(definition.rigid_bodies.size());
+  /* Guard against duplicate rigid-body objects (e.g. a pre-idempotency build had
+   * doubled them): only bind the first object for each rigid index. */
+  std::set<int> seen_indices;
+
+  FOREACH_COLLECTION_OBJECT_RECURSIVE_BEGIN (rbw->group, ob) {
+    if (ob->type != OB_MESH || ob->rigidbody_object == nullptr) {
+      continue;
+    }
+    IDProperty *props = ob->id.system_properties;
+    if (props == nullptr) {
+      continue;
+    }
+    IDProperty *idx_prop = IDP_GetPropertyTypeFromGroup(props, "mmd_physics_rigid_index", IDP_INT);
+    IDProperty *type_prop = IDP_GetPropertyTypeFromGroup(props, "mmd_physics_rigid_type", IDP_INT);
+    if (idx_prop == nullptr || type_prop == nullptr) {
+      continue;
+    }
+    const int ridx = IDP_int_get(idx_prop);
+    const int ptype = IDP_int_get(type_prop);
+    if (ridx < 0 || ridx >= rigid_count) {
+      continue;
+    }
+    if (ptype == 0) {
+      /* Static bodies are bone-parented and follow the skeleton already. */
+      continue;
+    }
+    if (seen_indices.find(ridx) != seen_indices.end()) {
+      continue; /* Already bound from an earlier duplicate object. */
+    }
+    const MMDRigidBodyDefinition &rigid = definition.rigid_bodies[ridx];
+    if (!rigid.bone_resolved || rigid.blender_bone_name.empty()) {
+      continue;
+    }
+    bPoseChannel *pchan = BKE_pose_channel_find_name(pose, rigid.blender_bone_name.c_str());
+    if (pchan == nullptr) {
+      continue;
+    }
+    const Bone *bone = pchan->bone_get(*armature);
+    if (bone == nullptr) {
+      continue;
+    }
+
+    BoneBinding binding;
+    binding.ob = ob;
+    binding.pchan = pchan;
+    /* Rigid body rest WORLD matrix (definition carried into world). */
+    float arm_world[4][4];
+    compute_object_world_matrix(armature, arm_world);
+    copy_m4_m4(binding.arm_world, arm_world);
+    compute_bone_rest_armature_matrix(bone, binding.bone_arm_mat);
+    float r_rest[4][4];
+    rigid_body_world_rest_matrix(arm_world, rigid, r_rest);
+    copy_m4_m4(binding.R_rest, r_rest);
+    /* Bone rest world matrix and the constant offset from the rigid-body rest. */
+    float b_rest[4][4];
+    mul_m4_m4m4(b_rest, arm_world, binding.bone_arm_mat);
+    float r_inv[4][4];
+    invert_m4_m4(r_inv, r_rest);
+    mul_m4_m4m4(binding.bone_offset, r_inv, b_rest);
+    seen_indices.insert(ridx);
+    bindings.push_back(binding);
+  }
+  FOREACH_COLLECTION_OBJECT_RECURSIVE_END;
+
+  if (bindings.empty()) {
+    report("MMD physics: no dynamic rigid bodies bound to bones to transfer");
+    return false;
+  }
+
+  /* Ensure the armature has an Action/slot/channelbag to write keyframes into. */
+  AnimData *adt = BKE_animdata_from_id(&armature->id);
+  if (adt == nullptr) {
+    adt = BKE_animdata_ensure_id(&armature->id);
+  }
+  if (adt == nullptr) {
+    report("MMD physics: no AnimData on the Armature");
+    return false;
+  }
+  animrig::Action *action = nullptr;
+  animrig::Slot *slot = nullptr;
+  bool created_action = false;
+  if (adt->action != nullptr) {
+    action = &adt->action->wrap();
+    slot = action->slot_for_handle(adt->slot_handle);
+  }
+  if (slot == nullptr) {
+    if (action == nullptr) {
+      action = &animrig::action_add(*bmain, "MMD_PhysicsBake");
+      created_action = true;
+      adt->action = action; /* animrig::Action derives from bAction. */
+    }
+    slot = &action->slot_add_for_id(armature->id);
+    adt->slot_handle = slot->handle;
+  }
+  action->layer_keystrip_ensure();
+  if (action->layers().is_empty() || action->layer(0)->strips().is_empty()) {
+    if (created_action) {
+      BKE_id_free(bmain, &action->id);
+    }
+    return false;
+  }
+  animrig::Strip &strip = *action->layer(0)->strip(0);
+  animrig::StripKeyframeData &strip_data = strip.data<animrig::StripKeyframeData>(*action);
+  animrig::Channelbag *channelbag = strip_data.channelbag_for_slot(*slot);
+  if (channelbag == nullptr) {
+    channelbag = &strip_data.channelbag_for_slot_add(*slot);
+  }
+
+  const animrig::KeyframeSettings settings = {BEZT_KEYTYPE_KEYFRAME, HD_AUTO_ANIM, BEZT_IPO_LIN};
+
+  const int start = scene->r.sfra;
+  const int end = scene->r.efra;
+  int keyframed_bones = 0;
+
+  for (const BoneBinding &binding : bindings) {
+    const Bone *bone = binding.pchan->bone_get(*armature);
+    if (bone == nullptr) {
+      continue;
+    }
+    /* Force quaternion rotation so the baked rotation keys drive the bone. */
+    binding.pchan->rotmode = ROT_MODE_QUAT;
+
+    char esc[128] = {};
+    BLI_str_escape(esc, bone->name, sizeof(esc));
+    const std::string base = std::string("pose.bones[\"") + esc + "\"]";
+    const std::string loc_path = base + ".location";
+    const std::string rot_path = base + ".rotation_quaternion";
+    const std::string scale_path = base + ".scale";
+
+    std::vector<FCurve *> loc_curves;
+    std::vector<FCurve *> rot_curves;
+    std::vector<FCurve *> scale_curves;
+    for (int c = 0; c < 3; c++) {
+      animrig::FCurveDescriptor d;
+      d.rna_path = loc_path;
+      d.array_index = c;
+      d.prop_type = PROP_FLOAT;
+      d.prop_subtype = PROP_NONE;
+      FCurve &f = channelbag->fcurve_ensure(nullptr, d);
+      loc_curves.push_back(&f);
+    }
+    for (int c = 0; c < 4; c++) {
+      animrig::FCurveDescriptor d;
+      d.rna_path = rot_path;
+      d.array_index = c;
+      d.prop_type = PROP_FLOAT;
+      d.prop_subtype = PROP_NONE;
+      FCurve &f = channelbag->fcurve_ensure(nullptr, d);
+      rot_curves.push_back(&f);
+    }
+    for (int c = 0; c < 3; c++) {
+      animrig::FCurveDescriptor d;
+      d.rna_path = scale_path;
+      d.array_index = c;
+      d.prop_type = PROP_FLOAT;
+      d.prop_subtype = PROP_NONE;
+      FCurve &f = channelbag->fcurve_ensure(nullptr, d);
+      scale_curves.push_back(&f);
+    }
+
+    for (int frame = start; frame <= end; frame++) {
+      scene->r.cfra = frame;
+      if (depsgraph != nullptr) {
+        BKE_scene_graph_update_for_newframe(depsgraph);
+      }
+
+      /* Baked rigid-body world matrix. `object_to_world()` on these helper
+       * objects can be the default identity (they are not necessarily in a
+       * depsgraph-evaluated view-layer collection), so read the authoritative
+       * simulation transform from the Bullet body (`rbo->pos/orn`, world space). */
+      RigidBodyOb *rbo = binding.ob->rigidbody_object;
+      float r_now[4][4];
+      copy_v3_v3(r_now[3], rbo->pos);
+      quat_to_mat4(r_now, rbo->orn);
+      /* B_now = R_now @ (R_rest^-1 @ B_rest_world) = R_now @ bone_offset. This
+       * applies the rigid body's displacement-from-rest to the bone's rest. */
+      float b_now[4][4];
+      mul_m4_m4m4(b_now, r_now, binding.bone_offset);
+      /* Convert world -> armature/pose space using the RELIABLE parent-chain
+       * world matrix (NOT `BKE_armature_mat_world_to_pose`, which multiplies by
+       * inverse(ob->object_to_world()) that can be a zero/un-evaluated matrix
+       * during the transfer and corrupt every result). */
+      float arm_world_inv[4][4];
+      invert_m4_m4(arm_world_inv, binding.arm_world);
+      float pose_arm[4][4];
+      /* Match BKE_armature_mat_world_to_pose's convention: out = in @ inv(object_obmat). */
+      mul_m4_m4m4(pose_arm, b_now, arm_world_inv);
+      /* pose -> bone-local basis, then apply to the pose bone. */
+      bke::PChanBoneConst chan_const(binding.pchan, binding.pchan->bone_get(*armature));
+      float basis[4][4];
+      BKE_armature_mat_pose_to_bone(chan_const, pose_arm, basis);
+      BKE_pchan_apply_mat4(binding.pchan, basis, true);
+
+      /* Diagnostic (once, first binding at the first frame): show which step
+       * would push the bone away from the expected position. */
+      if (frame == start && binding.pchan == bindings.front().pchan) {
+        fprintf(stderr,
+                "[MMDPB] r_now_t=(%.3f,%.3f,%.3f) arm_t=(%.3f,%.3f,%.3f) "
+                "bone_arm_mat_t=(%.3f,%.3f,%.3f) b_now_t=(%.3f,%.3f,%.3f) "
+                "pose_arm_t=(%.3f,%.3f,%.3f) basis_t=(%.3f,%.3f,%.3f)\n",
+                r_now[0][3],
+                r_now[1][3],
+                r_now[2][3],
+                binding.arm_world[0][3],
+                binding.arm_world[1][3],
+                binding.arm_world[2][3],
+                binding.bone_arm_mat[0][3],
+                binding.bone_arm_mat[1][3],
+                binding.bone_arm_mat[2][3],
+                b_now[0][3],
+                b_now[1][3],
+                b_now[2][3],
+                pose_arm[0][3],
+                pose_arm[1][3],
+                pose_arm[2][3],
+                basis[0][3],
+                basis[1][3],
+                basis[2][3]);
+      }
+
+      /* Insert keyframes on this bone's channels. */
+      for (int c = 0; c < 3; c++) {
+        animrig::insert_vert_fcurve(
+            loc_curves[c], {float(frame), binding.pchan->loc[c]}, settings, INSERTKEY_FAST);
+      }
+      for (int c = 0; c < 4; c++) {
+        animrig::insert_vert_fcurve(
+            rot_curves[c], {float(frame), binding.pchan->quat[c]}, settings, INSERTKEY_FAST);
+      }
+      for (int c = 0; c < 3; c++) {
+        animrig::insert_vert_fcurve(
+            scale_curves[c], {float(frame), binding.pchan->scale[c]}, settings, INSERTKEY_FAST);
+      }
+    }
+    for (FCurve *fcurve : loc_curves) {
+      BKE_fcurve_handles_recalc(*fcurve);
+    }
+    for (FCurve *fcurve : rot_curves) {
+      BKE_fcurve_handles_recalc(*fcurve);
+    }
+    for (FCurve *fcurve : scale_curves) {
+      BKE_fcurve_handles_recalc(*fcurve);
+    }
+    keyframed_bones++;
+  }
+
+  DEG_id_tag_update(&armature->id, ID_RECALC_GEOMETRY | ID_RECALC_ANIMATION);
+  if (reports != nullptr) {
+    BKE_reportf(reports,
+                RPT_INFO,
+                "MMD physics: baked %d dynamic rigid bodies (frames %d-%d) onto Armature bones",
+                keyframed_bones,
+                start,
+                end);
+  }
+  return keyframed_bones > 0;
 }
 
 }  // namespace blender::mmd_physics

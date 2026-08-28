@@ -22,12 +22,15 @@
 #ifdef WITH_IO_PMX
 
 #  include "BKE_context.hh"
+#  include "BKE_collection.hh"
 #  include "BKE_global.hh"
 #  include "BKE_idprop.hh"
 #  include "BKE_layer.hh"
 #  include "BKE_main.hh"
 #  include "BKE_material.hh"
+#  include "BKE_pointcache.h"
 #  include "BKE_report.hh"
+#  include "BKE_rigidbody.h"
 #  include "BKE_screen.hh"
 
 #  include "BLI_listbase.hh"
@@ -38,6 +41,9 @@
 #  include "BLT_translation.hh"
 
 #  include "DNA_object_types.h"
+#  include "DNA_pointcache_types.h"
+#  include "DNA_rigidbody_types.h"
+#  include "DNA_scene_types.h"
 #  include "DNA_screen_types.h"
 
 #  include "ED_fileselect.hh"
@@ -63,6 +69,8 @@
 #  include "vmd_export.hh"
 
 #  include "exporter/pmx_export.hh"
+
+#  include "mmd_physics_definition.hh"
 
 #  include <algorithm>
 #  include <string>
@@ -617,6 +625,150 @@ void MMD_TOOLS_OT_edge_preview_setup(wmOperatorType *ot)
   RNA_def_enum(ot->srna, "action", mmd_tools_edge_action_items, 0, "动作", "");
 }
 
+/* --- Native rigid body rig build / bake (mmd_tools build_rig / ptcache bake) -- */
+
+static wmOperatorStatus mmd_tools_build_rig_exec(bContext *C, wmOperator *op)
+{
+  Main *bmain = CTX_data_main(C);
+  Scene *scene = CTX_data_scene(C);
+  Object *active = CTX_data_active_object(C);
+  if (bmain == nullptr || scene == nullptr) {
+    BKE_report(op->reports, RPT_ERROR, "没有活动场景");
+    return OPERATOR_CANCELLED;
+  }
+  bool ambiguous = false;
+  Collection *model_root = blender::io::pmx::find_pmx_model_collection(bmain, active, ambiguous);
+  if (model_root == nullptr) {
+    BKE_report(op->reports,
+               RPT_ERROR,
+               ambiguous ? "存在多个已导入的 PMX 模型；请选中目标模型的对象" :
+                           "未找到已导入的 PMX 模型");
+    return OPERATOR_CANCELLED;
+  }
+  mmd_physics::MMDPhysicsDefinition definition;
+  if (!mmd_physics::deserialize_physics_definition(*model_root, definition, op->reports)) {
+    BKE_report(op->reports, RPT_ERROR, "无法读取模型上的 MMD 物理定义");
+    return OPERATOR_CANCELLED;
+  }
+  if (!mmd_physics::create_native_rigid_bodies(
+          bmain, scene, active, model_root, definition, op->reports))
+  {
+    BKE_report(op->reports, RPT_ERROR, "构建 Blender 原生刚体失败");
+    return OPERATOR_CANCELLED;
+  }
+  BKE_reportf(op->reports,
+              RPT_INFO,
+              "已构建 %zu 个原生刚体、%zu 个原生关节",
+              definition.rigid_bodies.size(),
+              definition.joints.size());
+  return OPERATOR_FINISHED;
+}
+
+void MMD_TOOLS_OT_build_rig(wmOperatorType *ot)
+{
+  ot->name = "构建原生刚体";
+  ot->description = "从模型上的 MMD 物理定义构建 Blender 原生 RigidBody/Joint（mmd_tools build_rig 等价）";
+  ot->idname = "MMD_TOOLS_OT_build_rig";
+  ot->exec = mmd_tools_build_rig_exec;
+  ot->poll = WM_operator_winactive;
+  ot->flag = OPTYPE_UNDO | OPTYPE_REGISTER;
+}
+
+static wmOperatorStatus mmd_tools_ptcache_rigid_body_bake_exec(bContext *C, wmOperator *op)
+{
+  Scene *scene = CTX_data_scene(C);
+  RigidBodyWorld *rbw = BKE_rigidbody_get_world(scene);
+  if (rbw == nullptr || rbw->shared == nullptr || rbw->shared->pointcache == nullptr) {
+    BKE_report(op->reports, RPT_ERROR, "场景没有原生刚体世界；请先构建物理（build_rig）");
+    return OPERATOR_CANCELLED;
+  }
+  Object *sample_ob = nullptr;
+  FOREACH_COLLECTION_OBJECT_RECURSIVE_BEGIN (rbw->group, ob) {
+    if (ob->type == OB_MESH && ob->rigidbody_object != nullptr) {
+      sample_ob = ob;
+      break;
+    }
+  }
+  FOREACH_COLLECTION_OBJECT_RECURSIVE_END;
+  if (sample_ob == nullptr) {
+    BKE_report(op->reports, RPT_ERROR, "刚体世界没有可烘焙的刚体对象");
+    return OPERATOR_CANCELLED;
+  }
+
+  PointCache *cache = rbw->shared->pointcache;
+  cache->startframe = scene->r.sfra;
+  cache->endframe = scene->r.efra;
+  cache->flag |= PTCACHE_REDO_NEEDED;
+
+  PTCacheBaker *baker = MEM_new_zeroed<PTCacheBaker>("PTCacheBaker");
+  baker->bmain = CTX_data_main(C);
+  baker->scene = scene;
+  baker->view_layer = CTX_data_view_layer(C);
+  baker->depsgraph = CTX_data_depsgraph_pointer(C);
+  baker->bake = true;
+  baker->render = false;
+  baker->anim_init = true;
+  baker->quick_step = 1;
+  BKE_ptcache_id_from_rigidbody(&baker->pid, sample_ob, rbw);
+
+  WM_cursor_wait(true);
+  BKE_ptcache_bake(baker);
+  WM_cursor_wait(false);
+  MEM_delete(baker);
+
+  /* Dynamic rigid bodies drive their bones through the Copy Transforms /
+   * Copy Rotation constraints added at build_rig time (mmd_tools
+   * `mmd_tools_rigid_track`), so no keyframe transfer is needed here. Static
+   * bodies are bone-parented and follow the skeleton automatically. */
+
+  BKE_report(op->reports, RPT_INFO, "Blender 原生刚体物理烘焙完成（骨骼由 Copy 约束驱动）");
+  return OPERATOR_FINISHED;
+}
+
+void MMD_TOOLS_OT_ptcache_rigid_body_bake(wmOperatorType *ot)
+{
+  ot->name = "烘焙原生刚体";
+  ot->description = "用 Blender 原生 ptcache.bake 烘焙刚体世界（mmd_tools ptcache_rigid_body_bake 等价）";
+  ot->idname = "MMD_TOOLS_OT_ptcache_rigid_body_bake";
+  ot->exec = mmd_tools_ptcache_rigid_body_bake_exec;
+  ot->poll = WM_operator_winactive;
+  ot->flag = OPTYPE_UNDO | OPTYPE_REGISTER;
+}
+
+static wmOperatorStatus mmd_tools_clean_rig_exec(bContext *C, wmOperator * /*op*/)
+{
+  Scene *scene = CTX_data_scene(C);
+  RigidBodyWorld *rbw = BKE_rigidbody_get_world(scene);
+  if (rbw == nullptr) {
+    return OPERATOR_FINISHED;
+  }
+  Main *bmain = CTX_data_main(C);
+  FOREACH_COLLECTION_OBJECT_RECURSIVE_BEGIN (rbw->group, ob) {
+    if (ob->rigidbody_object != nullptr) {
+      BKE_rigidbody_remove_object(bmain, scene, ob, true);
+    }
+  }
+  FOREACH_COLLECTION_OBJECT_RECURSIVE_END;
+  FOREACH_COLLECTION_OBJECT_RECURSIVE_BEGIN (rbw->constraints, ob) {
+    if (ob->rigidbody_constraint != nullptr) {
+      BKE_rigidbody_remove_constraint(bmain, scene, ob, true);
+    }
+  }
+  FOREACH_COLLECTION_OBJECT_RECURSIVE_END;
+  BKE_rigidbody_cache_reset(rbw);
+  return OPERATOR_FINISHED;
+}
+
+void MMD_TOOLS_OT_clean_rig(wmOperatorType *ot)
+{
+  ot->name = "清除原生刚体";
+  ot->description = "移除模型上的 Blender 原生 RigidBody/Joint 设置（mmd_tools clean_rig 等价）";
+  ot->idname = "MMD_TOOLS_OT_clean_rig";
+  ot->exec = mmd_tools_clean_rig_exec;
+  ot->poll = WM_operator_winactive;
+  ot->flag = OPTYPE_UNDO | OPTYPE_REGISTER;
+}
+
 void MMD_TOOLS_OT_set_panel_language(wmOperatorType *ot);
 
 void mmd_tools_ops_register_operators()
@@ -631,6 +783,9 @@ void mmd_tools_ops_register_operators()
   WM_operatortype_append(MMD_TOOLS_OT_convert_to_mmd_model);
   WM_operatortype_append(MMD_TOOLS_OT_edge_preview_setup);
   WM_operatortype_append(MMD_TOOLS_OT_convert_materials);
+  WM_operatortype_append(MMD_TOOLS_OT_build_rig);
+  WM_operatortype_append(MMD_TOOLS_OT_ptcache_rigid_body_bake);
+  WM_operatortype_append(MMD_TOOLS_OT_clean_rig);
   WM_operatortype_append(MMD_TOOLS_OT_set_panel_language);
 }
 
@@ -830,6 +985,14 @@ static void mmd_tools_panel_draw(const bContext *C, Panel *panel)
   sim_layout.op("WM_OT_mmd_physics_start", text.physics_start, ICON_PLAY);
   sim_layout.op("WM_OT_mmd_physics_bake", text.physics_bake, ICON_ACTION);
   sim_layout.op("WM_OT_mmd_physics_stop", text.physics_stop, ICON_PAUSE);
+
+  /* Native Blender Rigid Body build / bake (mmd_tools build_rig equivalent). */
+  ui::Layout &native_layout = layout.box();
+  native_layout.label("原生刚体 / 烘焙", ICON_NONE);
+  native_layout.op("MMD_TOOLS_OT_build_rig", "构建物理 (build_rig)", ICON_MOD_PHYSICS);
+  native_layout.op(
+      "MMD_TOOLS_OT_ptcache_rigid_body_bake", "烘焙原生刚体 (ptcache)", ICON_ACTION);
+  native_layout.op("MMD_TOOLS_OT_clean_rig", "清除刚体 (clean_rig)", ICON_CANCEL);
 }
 
 void ED_mmd_tools_panel_register(ARegionType *art)
