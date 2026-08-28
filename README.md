@@ -110,7 +110,7 @@ Keep the extracted folder intact: the executables load the `5.3` runtime directo
 
 ### Requirements
 
-- Visual Studio 2022 with MSVC toolset 14.44.35207 (17.14.14) — the prebuilt `lib\windows_x64` libraries require it; the default toolset links with `LNK2019`
+- Visual Studio 2022 with MSVC v143 or newer
 - CMake 3.21 or newer
 - Python 3.11 for the embedded runtime
 - Git LFS and Git submodules
