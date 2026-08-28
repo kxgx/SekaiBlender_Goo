@@ -13,8 +13,8 @@ APPICON ICON DISCARDABLE "winblender.ico"
 BLENDERFILE ICON DISCARDABLE "winblenderfile.ico"
 
 IDR_VERSION1 VERSIONINFO
-FILEVERSION 1, 0, 0, 0
-PRODUCTVERSION 1, 0, 0, 0
+FILEVERSION 3, 1, 0, 0
+PRODUCTVERSION 3, 1, 0, 0
 FILEOS 0x00000004
 FILETYPE 0x00000001
 BEGIN
@@ -22,13 +22,13 @@ BEGIN
   BEGIN
     BLOCK "04090000"
     BEGIN
-      VALUE "FileVersion", "1.0"
-      VALUE "ProductVersion", "1.0"
-      VALUE "CompanyName", "SekaiBlender"
-      VALUE "FileDescription", "SekaiBlender 1.0"
+      VALUE "FileVersion", "3.1.0"
+      VALUE "ProductVersion", "3.1.0"
+      VALUE "CompanyName", "SekaiBlender Goo"
+      VALUE "FileDescription", "SekaiBlender Goo 3.1.0"
       VALUE "LegalCopyright", "GPLv3 (Blender Foundation)"
       VALUE "OriginalFilename", "SekaiBlender.exe"
-      VALUE "ProductName", "SekaiBlender"
+      VALUE "ProductName", "SekaiBlender Goo"
     END
   END
   BLOCK "VarFileInfo"
