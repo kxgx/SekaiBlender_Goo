@@ -238,13 +238,12 @@ bool MMDPhysicsWorld::initialize(const MMDPhysicsDefinition &def,
     runtime.collision_group_index = rigid_def.collision_group;
     runtime.no_collision_group = rigid_def.no_collision_group;
     runtime.collision_group = uint16_t(1u << rigid_def.collision_group);
-    /* MMP compatibility: mmd_tools stores an inverted BoolVector and MMP
-     * inverts it again, so the PMX disable mask reaches Bullet as its enable
-     * mask. This is not PMX-spec semantics, but preserves body-clothing
-     * contacts relied on by existing models. */
+    /* Store the PMX-spec ENABLE mask (complement of the disable mask) so the
+     * diagnostics sample agrees with the broadphase filter applied in
+     * create_rigid_body_ (which uses ~no_collision_group). */
     runtime.collision_mask = disable_rigid_body_contacts_ ?
                                  uint16_t(0) :
-                                 uint16_t(rigid_def.no_collision_group);
+                                 uint16_t(0xFFFFu & ~rigid_def.no_collision_group);
     runtime.name_local = rigid_def.name_local;
     runtime.blender_bone_name = rigid_def.blender_bone_name;
     runtime.initial_transform = body->getWorldTransform();
@@ -465,10 +464,20 @@ btRigidBody *MMDPhysicsWorld::create_rigid_body_(const MMDRigidBodyDefinition &d
   }
 
   const short group = short(1u << def.collision_group);
-  /* Match the mmd_tools/MMP compatibility mask stored in the runtime. */
+  /* PMX `no_collision_group` is a per-group DISABLE mask (bit i set = do NOT
+   * collide with group i). Bullet's collision mask is the ENABLE mask (bit i
+   * set = collide with group i), so it must be the complement. Using the raw
+   * `no_collision_group` here inverts the semantics: the skirt (group 3,
+   * nocoll=0xFFF7) would then mask OUT its own group (bit 3 clear) and so
+   * NEVER self-collide -> front/back panels overlap ("前后重合") and panels
+   * pass through each other. `~no_collision_group` makes the skirt self-collide
+   * (bit 3 set) while skipping groups flagged as non-colliding (e.g. the body
+   * group 0), matching the joint-collision (create_joint_) and the mmd_tools
+   * NCC (apply_mmd_tools_ncc_) paths which already use `~no_collision_group`.
+   */
   const short mask = disable_rigid_body_contacts_ ?
                          short(0) :
-                         short(def.no_collision_group);
+                         short(0xFFFFu & ~def.no_collision_group);
   dynamics_world_->addRigidBody(body, group, mask);
 
   /* Store PMX index for cross-referencing from Bullet back to PMX data. */
