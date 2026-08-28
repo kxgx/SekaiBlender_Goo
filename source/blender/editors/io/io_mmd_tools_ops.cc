@@ -23,7 +23,9 @@
 
 #  include "BKE_context.hh"
 #  include "BKE_global.hh"
+#  include "BKE_idprop.hh"
 #  include "BKE_main.hh"
+#  include "BKE_material.hh"
 #  include "BKE_report.hh"
 #  include "BKE_screen.hh"
 
@@ -58,6 +60,8 @@
 
 #  include "vmd_import.hh"
 #  include "vmd_export.hh"
+
+#  include "exporter/pmx_export.hh"
 
 #  include <cstring>
 
@@ -110,6 +114,107 @@ void MMD_TOOLS_OT_import_pmx(wmOperatorType *ot)
   RNA_def_boolean(ot->srna, "split_by_material", true, "Split by Material", "");
   auto *prop = RNA_def_string(ot->srna, "filter_glob", "*.pmx", 0, "Extension Filter", "");
   RNA_def_property_flag(prop, PROP_HIDDEN);
+}
+
+/* --- PMX export (delegate to the native export kernel) ------------------------ */
+
+static wmOperatorStatus mmd_tools_export_pmx_exec(bContext *C, wmOperator *op)
+{
+  bool ambiguous = false;
+  Collection *model_root = blender::io::pmx::find_pmx_model_collection(
+      CTX_data_main(C), CTX_data_active_object(C), ambiguous);
+  if (model_root == nullptr) {
+    BKE_report(op->reports,
+               RPT_ERROR,
+               ambiguous ? "Several imported PMX models are present; select an object of the one "
+                           "to export" :
+                           "No imported PMX model found. PMX export needs the source data PMX "
+                           "import retains on the model collection");
+    return OPERATOR_CANCELLED;
+  }
+  char filepath[FILE_MAX];
+  RNA_string_get(op->ptr, "filepath", filepath);
+  blender::io::pmx::PMXExportOptions options;
+  STRNCPY(options.filepath, filepath);
+  blender::io::pmx::PMXExportReport report;
+  if (!blender::io::pmx::export_pmx_model(*model_root, options, op->reports, report)) {
+    return OPERATOR_CANCELLED;
+  }
+  BKE_reportf(op->reports,
+              RPT_INFO,
+              "PMX export complete: %d verts, %d faces, %d materials, %d bones, %d morphs",
+              report.vertex_count,
+              report.face_count,
+              report.material_count,
+              report.bone_count,
+              report.morph_count);
+  return OPERATOR_FINISHED;
+}
+
+void MMD_TOOLS_OT_export_pmx(wmOperatorType *ot)
+{
+  ot->name = "Export PMX";
+  ot->description = "Export an imported MMD PMX model (mmd_tools namespace)";
+  ot->idname = "MMD_TOOLS_OT_export_pmx";
+  ot->invoke = ed::io::filesel_drop_import_invoke;
+  ot->exec = mmd_tools_export_pmx_exec;
+  ot->poll = WM_operator_winactive;
+  ot->flag = OPTYPE_PRESET;
+
+  WM_operator_properties_filesel(ot,
+                                 FILE_TYPE_FOLDER,
+                                 FILE_BLENDER,
+                                 FILE_SAVE,
+                                 WM_FILESEL_FILEPATH | WM_FILESEL_SHOW_PROPS,
+                                 FILE_DEFAULTDISPLAY,
+                                 FILE_SORT_DEFAULT);
+  auto *prop = RNA_def_string(ot->srna, "filter_glob", "*.pmx", 0, "Extension Filter", "");
+  RNA_def_property_flag(prop, PROP_HIDDEN);
+}
+
+/* --- Convert MMD materials to Blender (mmd_tools.convert_materials) ----------- */
+
+static wmOperatorStatus mmd_tools_convert_materials_exec(bContext *C, wmOperator *op)
+{
+  /* MBTs-NG and mmd_tools call `mmd_tools.convert_materials()`. Goo's PMX import
+   * marks imported materials with `mmd_pmx_edge_enabled` system properties; treat
+   * those as MMD materials. Building a full MMD->Blender shader converter is a
+   * large, separate effort; this bridge is conservative and robust, and reports
+   * how many MMD materials are present so the workflow is not a silent no-op. */
+  Main *bmain = CTX_data_main(C);
+  int mmd_materials = 0;
+  for (Material *mat = static_cast<Material *>(bmain->materials.first); mat != nullptr;
+       mat = static_cast<Material *>(mat->id.next))
+  {
+    if (mat == nullptr) {
+      continue;
+    }
+    IDProperty *props = mat->id.system_properties;
+    if (props != nullptr &&
+        IDP_GetPropertyFromGroup_null(props, "mmd_pmx_edge_enabled") != nullptr)
+    {
+      mmd_materials++;
+    }
+  }
+  BKE_reportf(op->reports,
+              RPT_INFO,
+              mmd_materials == 0 ?
+                  "No MMD materials found. Import a PMX model first (convert_materials is a "
+                  "no-op stub in this Goo build)" :
+                  "Found %d MMD material(s); convert_materials is a reporting stub in this Goo "
+                  "build",
+              mmd_materials);
+  return OPERATOR_FINISHED;
+}
+
+void MMD_TOOLS_OT_convert_materials(wmOperatorType *ot)
+{
+  ot->name = "Convert Materials";
+  ot->description = "Convert MMD materials to Blender (mmd_tools namespace)";
+  ot->idname = "MMD_TOOLS_OT_convert_materials";
+  ot->exec = mmd_tools_convert_materials_exec;
+  ot->poll = WM_operator_winactive;
+  ot->flag = OPTYPE_UNDO | OPTYPE_REGISTER;
 }
 
 /* --- VMD import / export (delegate to the public kernel API) ----------------- */
@@ -368,11 +473,13 @@ void MMD_TOOLS_OT_edge_preview_setup(wmOperatorType *ot)
 void mmd_tools_ops_register_operators()
 {
   WM_operatortype_append(MMD_TOOLS_OT_import_pmx);
+  WM_operatortype_append(MMD_TOOLS_OT_export_pmx);
   WM_operatortype_append(MMD_TOOLS_OT_import_vmd);
   WM_operatortype_append(MMD_TOOLS_OT_export_vmd);
   WM_operatortype_append(MMD_TOOLS_OT_attach_meshes);
   WM_operatortype_append(MMD_TOOLS_OT_convert_to_mmd_model);
   WM_operatortype_append(MMD_TOOLS_OT_edge_preview_setup);
+  WM_operatortype_append(MMD_TOOLS_OT_convert_materials);
 }
 
 /* --- Native mmd_tools N-panel (sidebar) --------------------------------------- */
@@ -391,6 +498,7 @@ static void mmd_tools_panel_draw(const bContext * /*C*/, Panel *panel)
   ui::Layout &io_layout = layout.box();
   io_layout.label(IFACE_("Import / Export"), ICON_NONE);
   io_layout.op("MMD_TOOLS_OT_import_pmx", IFACE_("Import PMX..."), ICON_IMPORT);
+  io_layout.op("MMD_TOOLS_OT_export_pmx", IFACE_("Export PMX..."), ICON_EXPORT);
   io_layout.op("MMD_TOOLS_OT_import_vmd", IFACE_("Import VMD..."), ICON_IMPORT);
   io_layout.op("MMD_TOOLS_OT_export_vmd", IFACE_("Export VMD..."), ICON_EXPORT);
 
@@ -399,6 +507,7 @@ static void mmd_tools_panel_draw(const bContext * /*C*/, Panel *panel)
   rig_layout.op("MMD_TOOLS_OT_attach_meshes", IFACE_("Attach Meshes"), ICON_OBJECT_DATA);
   rig_layout.op(
       "MMD_TOOLS_OT_convert_to_mmd_model", IFACE_("Convert to MMD Model"), ICON_ARMATURE_DATA);
+  rig_layout.op("MMD_TOOLS_OT_convert_materials", IFACE_("Convert Materials"), ICON_MATERIAL);
   rig_layout.op("MMD_TOOLS_OT_edge_preview_setup", IFACE_("Edge Preview"), ICON_SHADING_RENDERED);
 }
 
