@@ -9,6 +9,7 @@
 #pragma once
 
 struct wmOperatorType;
+struct ARegionType;
 
 namespace blender {
 
@@ -21,5 +22,8 @@ void MMD_TOOLS_OT_edge_preview_setup(wmOperatorType *ot);
 
 /** Register all mmd_tools-namespace operators (called from ED_operatortypes_io). */
 void mmd_tools_ops_register_operators();
+
+/** Register the "MMD Tools" panel in the 3D View sidebar (N-panel). */
+void ED_mmd_tools_panel_register(ARegionType *art);
 
 }  // namespace blender

@@ -25,17 +25,28 @@
 #  include "BKE_global.hh"
 #  include "BKE_main.hh"
 #  include "BKE_report.hh"
+#  include "BKE_screen.hh"
 
 #  include "BLI_listbase.hh"
 #  include "BLI_string.hh"
+#  include "BLI_string_utf8.hh"
 #  include "BLI_math_matrix_c.hh"
 
+#  include "BLT_translation.hh"
+
 #  include "DNA_object_types.h"
+#  include "DNA_screen_types.h"
 
 #  include "ED_fileselect.hh"
 
+#  include "MEM_guardedalloc.h"
+
 #  include "RNA_access.hh"
 #  include "RNA_define.hh"
+
+#  include "UI_interface_layout.hh"
+#  include "UI_interface_types.hh"
+#  include "UI_resources.hh"
 
 #  include "WM_api.hh"
 #  include "WM_types.hh"
@@ -362,6 +373,48 @@ void mmd_tools_ops_register_operators()
   WM_operatortype_append(MMD_TOOLS_OT_attach_meshes);
   WM_operatortype_append(MMD_TOOLS_OT_convert_to_mmd_model);
   WM_operatortype_append(MMD_TOOLS_OT_edge_preview_setup);
+}
+
+/* --- Native mmd_tools N-panel (sidebar) --------------------------------------- */
+
+static bool mmd_tools_panel_poll(const bContext *C, PanelType * /*pt*/)
+{
+  /* Show the panel whenever a 3D View exists with an active object; the
+   * import/attach/convert actions are reachable regardless of object type. */
+  return CTX_data_active_object(C) != nullptr;
+}
+
+static void mmd_tools_panel_draw(const bContext * /*C*/, Panel *panel)
+{
+  ui::Layout &layout = *panel->layout;
+
+  ui::Layout &io_layout = layout.box();
+  io_layout.label(IFACE_("Import / Export"), ICON_NONE);
+  io_layout.op("MMD_TOOLS_OT_import_pmx", IFACE_("Import PMX..."), ICON_IMPORT);
+  io_layout.op("MMD_TOOLS_OT_import_vmd", IFACE_("Import VMD..."), ICON_IMPORT);
+  io_layout.op("MMD_TOOLS_OT_export_vmd", IFACE_("Export VMD..."), ICON_EXPORT);
+
+  ui::Layout &rig_layout = layout.box();
+  rig_layout.label(IFACE_("MMD Model"), ICON_NONE);
+  rig_layout.op("MMD_TOOLS_OT_attach_meshes", IFACE_("Attach Meshes"), ICON_OBJECT_DATA);
+  rig_layout.op(
+      "MMD_TOOLS_OT_convert_to_mmd_model", IFACE_("Convert to MMD Model"), ICON_ARMATURE_DATA);
+  rig_layout.op("MMD_TOOLS_OT_edge_preview_setup", IFACE_("Edge Preview"), ICON_SHADING_RENDERED);
+}
+
+void ED_mmd_tools_panel_register(ARegionType *art)
+{
+  if (art == nullptr) {
+    return;
+  }
+  PanelType *pt = MEM_new_zeroed<PanelType>("spacetype view3d panel mmd tools");
+  STRNCPY_UTF8(pt->idname, "VIEW3D_PT_mmd_tools");
+  STRNCPY_UTF8(pt->label, N_("MMD Tools"));
+  STRNCPY_UTF8(pt->category, "MMD");
+  STRNCPY_UTF8(pt->translation_context, BLT_I18NCONTEXT_DEFAULT_BPYRNA);
+  pt->draw = mmd_tools_panel_draw;
+  pt->poll = mmd_tools_panel_poll;
+  BLI_addtail(&art->paneltypes, pt);
 }
 
 }  // namespace blender

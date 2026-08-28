@@ -75,6 +75,7 @@
 #ifdef WITH_IO_PMX
 #  include "io_mmd_physics_ops.hh" /* ED_mmd_physics_panel_register */
 #  include "io_mmd_render_ops.hh"  /* ED_mmd_render_panel_register */
+#  include "io_mmd_tools_ops.hh"   /* ED_mmd_tools_panel_register */
 #endif
 
 #include "view3d_intern.hh" /* own include */
@@ -3009,6 +3010,8 @@ void view3d_buttons_register(ARegionType *art)
   ED_mmd_physics_panel_register(art);
   /* MMD render N-panel ("MMD Render" tab), kept separate from physics. */
   ED_mmd_render_panel_register(art);
+  /* Goo-native mmd_tools N-panel (import/export/attach/convert). */
+  ED_mmd_tools_panel_register(art);
 #endif
 }
 
