@@ -102,6 +102,8 @@ if(WITH_IO_PMX)
     io_mmd_render_ops.cc
     io_mmd_physics_ops.hh
     io_mmd_render_ops.hh
+    io_mmd_tools_ops.cc
+    io_mmd_tools_ops.hh
   )
   list(APPEND LIB
     bf_io_pmx
