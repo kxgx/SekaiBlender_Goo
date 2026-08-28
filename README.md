@@ -48,6 +48,7 @@ Keep the extracted folder intact: the executables load the `5.3` runtime directo
 | **IK** | Native CCD V8 solver with PMX schema 1/2 support and angle limits |
 | **Physics** | Realtime Bullet preview, multi-model scenes and deterministic Action Bake |
 | **Viewport** | MMD toon outlines, EEVEE workflows and AMD FSR 1.0 upscaling |
+| **mmd_tools** | Built-in compat layer: `bpy.ops.mmd_tools.*` operators, RNA data model (`obj.mmd_type`/`mmd_root`, `pose.bones.mmd_ik_toggle`) and a Chinese MMD Tools sidebar panel — so add-ons that depend on mmd_tools (e.g. blander_ue5_link, MBTs-NG) detect it and call it in any Goo install |
 
 ## Feature Set
 
@@ -62,6 +63,13 @@ Keep the extracted folder intact: the executables load the `5.3` runtime directo
 - VMD bone and morph Actions with position, quaternion and Bezier interpolation.
 - Native VMD camera import and export with perspective/orthographic support.
 - Camera rig export preserves per-channel Bezier curves when the source uses the supported rig layout.
+
+### mmd_tools Compatibility Layer
+
+- **`bpy.ops.mmd_tools.*`** namespace is bridged to Goo's native C++ kernel: `import_pmx`/`export_pmx`, `import_vmd`/`export_vmd`, `vmd_camera_import`/`vmd_camera_export`, plus `attach_meshes`, `convert_to_mmd_model`, `convert_materials`, `edge_preview_setup` and `set_panel_language`.
+- **RNA data model** registered by a bundled `scripts/addons_core/mmd_tools` module so `getattr(obj, "mmd_type")`, `obj.mmd_root`, `obj.mmd_bone`, `pose.bones["X"].mmd_ik_toggle` and `Material.mmd_material` resolve as real attributes; the `mmd_tools` key is present in `bpy.context.preferences.addons` via `BKE_addon_ensure`.
+- **Native MMD Tools panel** (`VIEW3D_PT_mmd_tools`, category **MMD**) in the 3D View sidebar with a Chinese UI and a language switcher (中文 / English / 日本語).
+- This is a thin compat layer, **not** the upstream third-party mmd_tools add-on: heavy MMD parsing/IK/physics live in the compiled C++ engine. It exists so that add-ons which depend on mmd_tools work in a stock Goo install.
 
 ### Realtime Physics
 
@@ -95,6 +103,8 @@ Keep the extracted folder intact: the executables load the `5.3` runtime directo
 | FP64 vs FP32 CUDA bake | Max quaternion diff 8.6e-8 (fp64 available via `MMD_BAKE_FP64=1`) |
 | Multi-stream CUDA bake (2 vs 4 streams) | Identical results (max diff 1.2e-7) |
 | Repeated bake consistency | Second bake reproduces first bake's IK gating via the recorded VMD source action |
+| **mmd_tools import pass** (61 PMX + 7 bone VMD + 7 camera VMD, real MMD library) | 75/75 imports succeeded via `mmd_tools.import_pmx` / `import_vmd` / `vmd_camera_import` in the real engine |
+| **mmd_tools dependency plugins** (installed build) | MBTs-NG `convert_materials`/`edge_preview_create` → `{'FINISHED'}`; blander_ue5_link `mmd_tools_enabled()` → True |
 
 ## Build On Windows
 
