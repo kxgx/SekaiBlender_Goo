@@ -285,8 +285,9 @@ void MMD_TOOLS_OT_convert_materials(wmOperatorType *ot)
 
 static wmOperatorStatus mmd_tools_import_vmd_exec(bContext *C, wmOperator *op)
 {
-  const auto paths = ed::io::paths_from_operator_properties(op->ptr);
-  if (paths.is_empty()) {
+  char filepath[FILE_MAX];
+  RNA_string_get(op->ptr, "filepath", filepath);
+  if (filepath[0] == '\0') {
     return OPERATOR_CANCELLED;
   }
   Main *bmain = CTX_data_main(C);
@@ -323,9 +324,27 @@ static wmOperatorStatus mmd_tools_import_vmd_exec(bContext *C, wmOperator *op)
   options.update_scene_settings = RNA_boolean_get(op->ptr, "update_scene_settings");
   options.use_nla = RNA_boolean_get(op->ptr, "use_nla");
 
-  blender::io::vmd::VMDImportReport result;
-  if (!blender::io::vmd::import_vmd_action(bmain, *target, paths[0], options, op->reports, result))
+  Object *morph_controller = nullptr;
+  /* The native PMX importer creates a `PMXMorphControl` mesh under the model
+   * root. Import bone + morph animation when it is present (mirrors the native
+   * WM_OT_vmd_import path), otherwise bone-only. */
+  for (Object *ob = static_cast<Object *>(bmain->objects.first); ob != nullptr;
+       ob = static_cast<Object *>(ob->id.next))
   {
+    if (ob->type == OB_MESH && strncmp(ob->id.name + 2, "PMXMorphControl", 15) == 0) {
+      morph_controller = ob;
+      break;
+    }
+  }
+
+  blender::io::vmd::VMDImportReport result;
+  const bool success = (morph_controller != nullptr) ?
+                           blender::io::vmd::import_vmd_action_with_morphs(
+                               bmain, *target, *morph_controller, filepath, options, op->reports,
+                               result) :
+                           blender::io::vmd::import_vmd_action(
+                               bmain, *target, filepath, options, op->reports, result);
+  if (!success) {
     return OPERATOR_CANCELLED;
   }
   BKE_reportf(op->reports,
@@ -444,8 +463,9 @@ void MMD_TOOLS_OT_export_vmd(wmOperatorType *ot)
 
 static wmOperatorStatus mmd_tools_vmd_camera_import_exec(bContext *C, wmOperator *op)
 {
-  const auto paths = ed::io::paths_from_operator_properties(op->ptr);
-  if (paths.is_empty()) {
+  char filepath[FILE_MAX];
+  RNA_string_get(op->ptr, "filepath", filepath);
+  if (filepath[0] == '\0') {
     return OPERATOR_CANCELLED;
   }
   Main *bmain = CTX_data_main(C);
@@ -472,7 +492,7 @@ static wmOperatorStatus mmd_tools_vmd_camera_import_exec(bContext *C, wmOperator
   }
   blender::io::vmd::VMDImportReport result;
   if (!blender::io::vmd::import_vmd_camera(
-          bmain, *target_collection, paths[0], options, op->reports, result, target_camera))
+          bmain, *target_collection, filepath, options, op->reports, result, target_camera))
   {
     return OPERATOR_CANCELLED;
   }
