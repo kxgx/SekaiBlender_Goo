@@ -75,7 +75,7 @@ if "%MUST_CONFIGURE%"=="1" (
 )
 echo echo off > %BUILD_DIR%\rebuild.cmd
 echo if "%%VSCMD_VER%%" == "" ^( >> %BUILD_DIR%\rebuild.cmd
-echo   call "%VCVARS%" %BUILD_ARCH% >> %BUILD_DIR%\rebuild.cmd
+echo   call "%VCVARS%" %BUILD_ARCH% -vcvars_ver=14.44.35207 >> %BUILD_DIR%\rebuild.cmd
 echo ^) >> %BUILD_DIR%\rebuild.cmd
 echo "%CMAKE%" . >> %BUILD_DIR%\rebuild.cmd
 echo echo %%TIME%% ^> buildtime.txt >> %BUILD_DIR%\rebuild.cmd

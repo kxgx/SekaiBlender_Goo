@@ -74,9 +74,9 @@ if "%WITH_CLANG%" == "1" (
 set VCVARS=%VS_InstallDir%\VC\Auxiliary\Build\vcvarsall.bat
 if exist "%VCVARS%" (
 	if NOT "%verbose%" == "" (
-		echo calling "%VCVARS%" %BUILD_ARCH%
+		echo calling "%VCVARS%" %BUILD_ARCH% -vcvars_ver=14.44.35207
 	)
-	call "%VCVARS%" %BUILD_ARCH%
+	call "%VCVARS%" %BUILD_ARCH% -vcvars_ver=14.44.35207
 ) else (
 	if NOT "%verbose%" == "" (
 		echo "%VCVARS%" not found
