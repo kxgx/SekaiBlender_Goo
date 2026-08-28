@@ -235,26 +235,7 @@ void BoneConverter::compute_from_pose_bone(const bPoseChannel &pchan,
    * Blender RNA's Bone.matrix_local used by mmd_tools. Bone::bone_mat is only
    * the bone-space basis matrix and is not equivalent for child bones. */
   float arm_rot[3][3];
-  {
-    /* [世界的歌] 修复：VMD 骨骼四元数是「相对父骨的局部姿态」，基准应取骨骼
-     * 「相对父骨的 rest 旋转」，而不是绝对 armature 空间 arm_mat（arm_mat 会把
-     * 父骨的 rest 叠加进去——上半身这类骨骼用绝对 arm_mat 时被放大成 ~180° 翻转，
-     * 连带腰/裙摆链翻转穿模）。仿照 rna_Bone.matrix_local 相对父骨的换算：
-     *   offs = parent_arm_mat^-1 * arm_mat。
-     * 得到 3x3 局部 rest，再沿用原 Y↔Z swap + transpose 的基变换。 */
-    float parent_arm_mat[4][4];
-    float parent_arm_inv[4][4];
-    float offs_m4[4][4];
-    if (bone->parent != nullptr) {
-      copy_m4_m4(parent_arm_mat, bone->parent->arm_mat);
-    }
-    else {
-      unit_m4(parent_arm_mat);
-    }
-    invert_m4_m4(parent_arm_inv, parent_arm_mat);
-    mul_m4_m4m4(offs_m4, parent_arm_inv, bone->arm_mat);
-    copy_m3_m4(arm_rot, offs_m4);
-  }
+  copy_m3_m4(arm_rot, bone->arm_mat);
   normalize_m3(arm_rot);
 
   /* Swap Y and Z columns: converts the bone's rest rotation from Blender's
