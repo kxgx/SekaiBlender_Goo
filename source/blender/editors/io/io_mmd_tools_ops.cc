@@ -74,6 +74,62 @@ static bool mmd_tools_active_armature_poll(bContext *C)
   return ob != nullptr && ob->type == OB_ARMATURE;
 }
 
+/* Set the registered mmd_tools RNA `mmd_type` enum on an object if the property
+ * is exposed (registered by the built-in mmd_tools Python module). Returns true
+ * when the value was set. */
+static bool mmd_tools_set_attr(Object *ob, const char *prop_name, const char *value)
+{
+  PointerRNA ptr = RNA_id_pointer_create(&ob->id);
+  PropertyRNA *prop = RNA_struct_find_property(&ptr, prop_name);
+  if (prop == nullptr) {
+    return false;
+  }
+  int enum_index = 0;
+  if (!RNA_property_enum_value(nullptr, &ptr, prop, value, &enum_index)) {
+    return false;
+  }
+  RNA_property_enum_set(&ptr, prop, enum_index);
+  return true;
+}
+
+/* Mark the model hierarchy with the mmd_tools data model so plugins that read
+ * `obj.mmd_type` recognise natively-imported MMD models. */
+static void mmd_tools_mark_imported_model(Main *bmain, Object *armature)
+{
+  if (armature == nullptr) {
+    return;
+  }
+  /* The model root is the top-level Empty that parents the armature (and the PMX
+   * Geometry mesh objects / morph controller). Walk up to the topmost Empty. */
+  Object *root = armature;
+  while (root->parent != nullptr && root->parent->type == OB_EMPTY) {
+    root = root->parent;
+  }
+  if (root == armature || root->parent != nullptr) {
+    /* armature may be directly under an Empty; find the top Empty ancestor */
+    Object *walk = armature;
+    while (walk->parent != nullptr) {
+      walk = walk->parent;
+    }
+    root = walk;
+  }
+  /* Mark the top-level object as the MMD model root. It is usually an Empty. */
+  mmd_tools_set_attr(root, "mmd_type", "ROOT");
+
+  if (armature != root) {
+    mmd_tools_set_attr(armature, "mmd_type", "NONE");
+  }
+  /* Mark every mesh object in the model as MMD mesh (NONE type is the default
+   * but setting it explicitly signalling is harmless for plugins). */
+  for (Object *ob = static_cast<Object *>(bmain->objects.first); ob != nullptr;
+       ob = static_cast<Object *>(ob->id.next))
+  {
+    if (ob->type == OB_MESH && (ob->parent == root || ob->parent == armature)) {
+      mmd_tools_set_attr(ob, "mmd_type", "NONE");
+    }
+  }
+}
+
 /* --- PMX import (delegate to the native kernel) ------------------------------ */
 
 static wmOperatorStatus mmd_tools_import_pmx_exec(bContext *C, wmOperator *op)
@@ -89,6 +145,13 @@ static wmOperatorStatus mmd_tools_import_pmx_exec(bContext *C, wmOperator *op)
   WM_cursor_wait(true);
   PMX_import(C, params);
   WM_cursor_wait(false);
+  /* mmd_tools compatibility: after import, mark the MMD model root Empty and the
+   * armature/mesh objects with the mmd_tools RNA data model (mmd_type / mmd_root)
+   * so plugins that read `obj.mmd_type` / find the "ROOT" object recognise the
+   * natively-imported model (e.g. blander_ue5_link mmd.find_model_root). */
+  if (params.result_armature != nullptr) {
+    mmd_tools_mark_imported_model(CTX_data_main(C), params.result_armature);
+  }
   return OPERATOR_FINISHED;
 }
 
