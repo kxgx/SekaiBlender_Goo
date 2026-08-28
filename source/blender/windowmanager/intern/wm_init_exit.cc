@@ -225,14 +225,6 @@ void WM_init(bContext *C, int argc, const char **argv)
   BKE_addon_pref_type_init();
   BKE_keyconfig_pref_type_init();
 
-  /* Goo native mmd_tools: register the `mmd_tools` addon identity so that
-   * `bpy.context.preferences.addons` contains the `mmd_tools` key. This lets
-   * plugins that detect mmd_tools (e.g. blander_ue5_link `mmd.py`) recognise it
-   * without depending on an external third-party mmd_tools add-on being
-   * installed/enabled. The heavy MMD I/O lives in the native C++ engine
-   * (io/pmx, io/vmd, io_mmd_*). */
-  BKE_addon_ensure(&U.addons, "mmd_tools");
-
   wm_operatortypes_register();
 
   WM_paneltype_init(); /* Lookup table only. */
@@ -311,6 +303,16 @@ void WM_init(bContext *C, int argc, const char **argv)
 
   /* Call again to set from preferences. */
   BLT_lang_set(nullptr);
+
+  /* Goo native mmd_tools: after the user preference add-ons are restored by
+   * `wm_homefile_read_ex`, register the `mmd_tools` addon identity so that
+   * `bpy.context.preferences.addons` contains the `mmd_tools` key. Done here
+   * (and not in WM_init's pre-homefile body) because the homefile read resets
+   * `U.addons`. This lets plugins that detect mmd_tools (e.g.
+   * blander_ue5_link `mmd.py`) recognise it without an external third-party
+   * mmd_tools add-on. The heavy MMD I/O lives in the native C++ engine
+   * (io/pmx, io/vmd, io_mmd_*). */
+  BKE_addon_ensure(&U.addons, "mmd_tools");
 
   /* For file-system. Called here so can include user preference paths if needed. */
   ED_file_init();
