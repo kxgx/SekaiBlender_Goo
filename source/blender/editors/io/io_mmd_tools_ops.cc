@@ -160,8 +160,8 @@ static wmOperatorStatus mmd_tools_import_pmx_exec(bContext *C, wmOperator *op)
 
 void MMD_TOOLS_OT_import_pmx(wmOperatorType *ot)
 {
-  ot->name = "Import PMX";
-  ot->description = "Import an MMD PMX model file (mmd_tools namespace)";
+  ot->name = "导入 PMX";
+  ot->description = "导入 MMD PMX 模型文件（mmd_tools 命名空间）";
   ot->idname = "MMD_TOOLS_OT_import_pmx";
   ot->invoke = ed::io::filesel_drop_import_invoke;
   ot->exec = mmd_tools_import_pmx_exec;
@@ -177,8 +177,8 @@ void MMD_TOOLS_OT_import_pmx(wmOperatorType *ot)
                                  FILE_DEFAULTDISPLAY,
                                  FILE_SORT_DEFAULT);
 
-  RNA_def_float(ot->srna, "global_scale", 0.08f, 1e-6f, 1e6f, "Scale", "", 0.001f, 1000.0f);
-  RNA_def_boolean(ot->srna, "split_by_material", true, "Split by Material", "");
+  RNA_def_float(ot->srna, "global_scale", 0.08f, 1e-6f, 1e6f, "缩放", "", 0.001f, 1000.0f);
+  RNA_def_boolean(ot->srna, "split_by_material", true, "按材质拆分", "");
   auto *prop = RNA_def_string(ot->srna, "filter_glob", "*.pmx", 0, "Extension Filter", "");
   RNA_def_property_flag(prop, PROP_HIDDEN);
 }
@@ -193,10 +193,8 @@ static wmOperatorStatus mmd_tools_export_pmx_exec(bContext *C, wmOperator *op)
   if (model_root == nullptr) {
     BKE_report(op->reports,
                RPT_ERROR,
-               ambiguous ? "Several imported PMX models are present; select an object of the one "
-                           "to export" :
-                           "No imported PMX model found. PMX export needs the source data PMX "
-                           "import retains on the model collection");
+               ambiguous ? "存在多个已导入的 PMX 模型；请选中要导出的那个模型的对象" :
+                           "未找到已导入的 PMX 模型。PMX 导出需要 PMX 导入时保留在模型集合上的源数据");
     return OPERATOR_CANCELLED;
   }
   char filepath[FILE_MAX];
@@ -209,7 +207,7 @@ static wmOperatorStatus mmd_tools_export_pmx_exec(bContext *C, wmOperator *op)
   }
   BKE_reportf(op->reports,
               RPT_INFO,
-              "PMX export complete: %d verts, %d faces, %d materials, %d bones, %d morphs",
+              "PMX 导出完成：%d 顶点，%d 面，%d 材质，%d 骨骼，%d 表情",
               report.vertex_count,
               report.face_count,
               report.material_count,
@@ -220,8 +218,8 @@ static wmOperatorStatus mmd_tools_export_pmx_exec(bContext *C, wmOperator *op)
 
 void MMD_TOOLS_OT_export_pmx(wmOperatorType *ot)
 {
-  ot->name = "Export PMX";
-  ot->description = "Export an imported MMD PMX model (mmd_tools namespace)";
+  ot->name = "导出 PMX";
+  ot->description = "导出已导入的 MMD PMX 模型（mmd_tools 命名空间）";
   ot->idname = "MMD_TOOLS_OT_export_pmx";
   ot->invoke = ed::io::filesel_drop_import_invoke;
   ot->exec = mmd_tools_export_pmx_exec;
@@ -266,18 +264,16 @@ static wmOperatorStatus mmd_tools_convert_materials_exec(bContext *C, wmOperator
   BKE_reportf(op->reports,
               RPT_INFO,
               mmd_materials == 0 ?
-                  "No MMD materials found. Import a PMX model first (convert_materials is a "
-                  "no-op stub in this Goo build)" :
-                  "Found %d MMD material(s); convert_materials is a reporting stub in this Goo "
-                  "build",
+                  "未找到 MMD 材质。请先导入 PMX 模型（此版本的 convert_materials 为报告占位）" :
+                  "找到 %d 个 MMD 材质；此版本的 convert_materials 为报告占位",
               mmd_materials);
   return OPERATOR_FINISHED;
 }
 
 void MMD_TOOLS_OT_convert_materials(wmOperatorType *ot)
 {
-  ot->name = "Convert Materials";
-  ot->description = "Convert MMD materials to Blender (mmd_tools namespace)";
+  ot->name = "转换材质";
+  ot->description = "把 MMD 材质转换为 Blender 材质（mmd_tools 命名空间）";
   ot->idname = "MMD_TOOLS_OT_convert_materials";
   ot->exec = mmd_tools_convert_materials_exec;
   ot->poll = WM_operator_winactive;
@@ -311,7 +307,7 @@ static wmOperatorStatus mmd_tools_import_vmd_exec(bContext *C, wmOperator *op)
     }
   }
   if (target == nullptr) {
-    BKE_report(op->reports, RPT_ERROR, "VMD import requires an Armature object in the scene");
+    BKE_report(op->reports, RPT_ERROR, "VMD 导入需要场景中存在骨架对象");
     return OPERATOR_CANCELLED;
   }
 
@@ -352,7 +348,7 @@ static wmOperatorStatus mmd_tools_import_vmd_exec(bContext *C, wmOperator *op)
   }
   BKE_reportf(op->reports,
               RPT_INFO,
-              "VMD import complete: %d bones, %d bone frames",
+              "VMD 导入完成：%d 条骨骼轨道，%d 骨骼帧",
               result.action.mapped_track_count,
               result.read.bone_frame_count);
   return OPERATOR_FINISHED;
@@ -382,7 +378,7 @@ static wmOperatorStatus mmd_tools_export_vmd_exec(bContext *C, wmOperator *op)
   if (armature == nullptr) {
     BKE_report(op->reports,
                RPT_ERROR,
-               "VMD export requires an Armature as the active object");
+               "VMD 导出需要把骨架作为活动对象");
     return OPERATOR_CANCELLED;
   }
   char filepath[FILE_MAX];
@@ -401,7 +397,7 @@ static wmOperatorStatus mmd_tools_export_vmd_exec(bContext *C, wmOperator *op)
   }
   BKE_reportf(op->reports,
               RPT_INFO,
-              "VMD export complete: %d bones, %d bone frames",
+              "VMD 导出完成：%d 条骨骼，%d 骨骼帧",
               report.bone_count,
               report.bone_frame_count);
   return OPERATOR_FINISHED;
@@ -409,8 +405,8 @@ static wmOperatorStatus mmd_tools_export_vmd_exec(bContext *C, wmOperator *op)
 
 void MMD_TOOLS_OT_import_vmd(wmOperatorType *ot)
 {
-  ot->name = "Import VMD";
-  ot->description = "Import VMD bone/morph/camera motion (mmd_tools namespace)";
+  ot->name = "导入 VMD";
+  ot->description = "导入 VMD 骨骼/表情/相机动作（mmd_tools 命名空间）";
   ot->idname = "MMD_TOOLS_OT_import_vmd";
   ot->invoke = ed::io::filesel_drop_import_invoke;
   ot->exec = mmd_tools_import_vmd_exec;
@@ -426,21 +422,21 @@ void MMD_TOOLS_OT_import_vmd(wmOperatorType *ot)
                                  FILE_SORT_DEFAULT);
   auto *prop = RNA_def_string(ot->srna, "filter_glob", "*.vmd", 0, "Extension Filter", "");
   RNA_def_property_flag(prop, PROP_HIDDEN);
-  RNA_def_int(ot->srna, "frame_offset", 0, -1000, 1000, "Frame Offset", "", -1000, 1000);
-  RNA_def_boolean(ot->srna, "replace_existing_action", true, "Replace Existing Action", "");
-  RNA_def_float(ot->srna, "coordinate_scale", 0.08f, 0.000001f, 1000.0f, "Coordinate Scale", "", 0.001f, 1.0f);
-  RNA_def_boolean(ot->srna, "use_mirror", false, "Mirror", "");
-  RNA_def_boolean(ot->srna, "use_pose_mode", false, "Use Pose Mode", "");
-  RNA_def_boolean(ot->srna, "include_ik", true, "Include IK", "");
-  RNA_def_boolean(ot->srna, "update_scene_settings", true, "Update Scene Settings", "");
-  RNA_def_boolean(ot->srna, "use_nla", false, "Use NLA", "");
-  RNA_def_boolean(ot->srna, "use_vmd_bezier_interpolation", true, "VMD Bezier", "");
+  RNA_def_int(ot->srna, "frame_offset", 0, -1000, 1000, "帧偏移", "", -1000, 1000);
+  RNA_def_boolean(ot->srna, "replace_existing_action", true, "替换已有动作", "");
+  RNA_def_float(ot->srna, "coordinate_scale", 0.08f, 0.000001f, 1000.0f, "坐标缩放", "", 0.001f, 1.0f);
+  RNA_def_boolean(ot->srna, "use_mirror", false, "镜像", "");
+  RNA_def_boolean(ot->srna, "use_pose_mode", false, "使用姿势模式", "");
+  RNA_def_boolean(ot->srna, "include_ik", true, "包含 IK", "");
+  RNA_def_boolean(ot->srna, "update_scene_settings", true, "更新场景设置", "");
+  RNA_def_boolean(ot->srna, "use_nla", false, "使用 NLA", "");
+  RNA_def_boolean(ot->srna, "use_vmd_bezier_interpolation", true, "VMD 贝塞尔", "");
 }
 
 void MMD_TOOLS_OT_export_vmd(wmOperatorType *ot)
 {
-  ot->name = "Export VMD";
-  ot->description = "Export the active Armature Action as VMD motion (mmd_tools namespace)";
+  ot->name = "导出 VMD";
+  ot->description = "把当前骨架动作导出为 VMD 动作（mmd_tools 命名空间）";
   ot->idname = "MMD_TOOLS_OT_export_vmd";
   ot->invoke = ed::io::filesel_drop_import_invoke;
   ot->exec = mmd_tools_export_vmd_exec;
@@ -456,10 +452,10 @@ void MMD_TOOLS_OT_export_vmd(wmOperatorType *ot)
                                  FILE_SORT_DEFAULT);
   auto *prop = RNA_def_string(ot->srna, "filter_glob", "*.vmd", 0, "Extension Filter", "");
   RNA_def_property_flag(prop, PROP_HIDDEN);
-  RNA_def_string(ot->srna, "model_name", "Model", 255, "Model Name", "");
-  RNA_def_int(ot->srna, "frame_start", 0, 0, 1048574, "Start Frame", "", 0, 1048574);
-  RNA_def_int(ot->srna, "frame_end", 250, 0, 1048574, "End Frame", "", 0, 1048574);
-  RNA_def_float(ot->srna, "coordinate_scale", 0.08f, 0.000001f, 1000.0f, "Coordinate Scale", "", 0.001f, 1.0f);
+  RNA_def_string(ot->srna, "model_name", "Model", 255, "模型名", "");
+  RNA_def_int(ot->srna, "frame_start", 0, 0, 1048574, "起始帧", "", 0, 1048574);
+  RNA_def_int(ot->srna, "frame_end", 250, 0, 1048574, "结束帧", "", 0, 1048574);
+  RNA_def_float(ot->srna, "coordinate_scale", 0.08f, 0.000001f, 1000.0f, "坐标缩放", "", 0.001f, 1.0f);
 }
 
 /* --- VMD camera import / export (delegate to the public camera kernel) -------- */
@@ -478,7 +474,7 @@ static wmOperatorStatus mmd_tools_vmd_camera_import_exec(bContext *C, wmOperator
   Collection *target_collection = active_collection ? active_collection->collection :
                                                        scene->master_collection;
   if (target_collection == nullptr) {
-    BKE_report(op->reports, RPT_ERROR, "VMD camera import requires an editable collection");
+    BKE_report(op->reports, RPT_ERROR, "VMD 相机导入需要一个可编辑集合");
     return OPERATOR_CANCELLED;
   }
   blender::io::vmd::VMDImportOptions options;
@@ -499,7 +495,7 @@ static wmOperatorStatus mmd_tools_vmd_camera_import_exec(bContext *C, wmOperator
   {
     return OPERATOR_CANCELLED;
   }
-  BKE_report(op->reports, RPT_INFO, "VMD camera import complete");
+  BKE_report(op->reports, RPT_INFO, "VMD 相机导入完成");
   return OPERATOR_FINISHED;
 }
 
@@ -511,7 +507,7 @@ static wmOperatorStatus mmd_tools_vmd_camera_export_exec(bContext *C, wmOperator
     camera = scene->camera;
   }
   if (camera == nullptr || camera->type != OB_CAMERA) {
-    BKE_report(op->reports, RPT_ERROR, "VMD camera export requires an active Camera");
+    BKE_report(op->reports, RPT_ERROR, "VMD 相机导出需要一个活动相机");
     return OPERATOR_CANCELLED;
   }
   char filepath[FILE_MAX];
@@ -524,14 +520,14 @@ static wmOperatorStatus mmd_tools_vmd_camera_export_exec(bContext *C, wmOperator
   if (!blender::io::vmd::export_vmd_camera(*camera, filepath, options, op->reports, report)) {
     return OPERATOR_CANCELLED;
   }
-  BKE_report(op->reports, RPT_INFO, "VMD camera export complete");
+  BKE_report(op->reports, RPT_INFO, "VMD 相机导出完成");
   return OPERATOR_FINISHED;
 }
 
 void MMD_TOOLS_OT_vmd_camera_import(wmOperatorType *ot)
 {
-  ot->name = "Import VMD Camera";
-  ot->description = "Import VMD camera motion (mmd_tools namespace)";
+  ot->name = "导入 VMD 相机";
+  ot->description = "导入 VMD 相机动作（mmd_tools 命名空间）";
   ot->idname = "MMD_TOOLS_OT_vmd_camera_import";
   ot->invoke = ed::io::filesel_drop_import_invoke;
   ot->exec = mmd_tools_vmd_camera_import_exec;
@@ -546,15 +542,15 @@ void MMD_TOOLS_OT_vmd_camera_import(wmOperatorType *ot)
                                  FILE_SORT_DEFAULT);
   auto *prop = RNA_def_string(ot->srna, "filter_glob", "*.vmd", 0, "Extension Filter", "");
   RNA_def_property_flag(prop, PROP_HIDDEN);
-  RNA_def_int(ot->srna, "frame_offset", 0, -1000, 1000, "Frame Offset", "", -1000, 1000);
-  RNA_def_boolean(ot->srna, "replace_existing_action", true, "Replace Existing Action", "");
-  RNA_def_float(ot->srna, "coordinate_scale", 0.08f, 0.000001f, 1000.0f, "Coordinate Scale", "", 0.001f, 1.0f);
+  RNA_def_int(ot->srna, "frame_offset", 0, -1000, 1000, "帧偏移", "", -1000, 1000);
+  RNA_def_boolean(ot->srna, "replace_existing_action", true, "替换已有动作", "");
+  RNA_def_float(ot->srna, "coordinate_scale", 0.08f, 0.000001f, 1000.0f, "坐标缩放", "", 0.001f, 1.0f);
 }
 
 void MMD_TOOLS_OT_vmd_camera_export(wmOperatorType *ot)
 {
-  ot->name = "Export VMD Camera";
-  ot->description = "Export the active Camera as VMD camera motion (mmd_tools namespace)";
+  ot->name = "导出 VMD 相机";
+  ot->description = "把当前相机导出为 VMD 相机动作（mmd_tools 命名空间）";
   ot->idname = "MMD_TOOLS_OT_vmd_camera_export";
   ot->invoke = ed::io::filesel_drop_import_invoke;
   ot->exec = mmd_tools_vmd_camera_export_exec;
@@ -569,9 +565,9 @@ void MMD_TOOLS_OT_vmd_camera_export(wmOperatorType *ot)
                                  FILE_SORT_DEFAULT);
   auto *prop = RNA_def_string(ot->srna, "filter_glob", "*.vmd", 0, "Extension Filter", "");
   RNA_def_property_flag(prop, PROP_HIDDEN);
-  RNA_def_int(ot->srna, "frame_start", 0, 0, 1048574, "Start Frame", "", 0, 1048574);
-  RNA_def_int(ot->srna, "frame_end", 250, 0, 1048574, "End Frame", "", 0, 1048574);
-  RNA_def_float(ot->srna, "coordinate_scale", 0.08f, 0.000001f, 1000.0f, "Coordinate Scale", "", 0.001f, 1.0f);
+  RNA_def_int(ot->srna, "frame_start", 0, 0, 1048574, "起始帧", "", 0, 1048574);
+  RNA_def_int(ot->srna, "frame_end", 250, 0, 1048574, "结束帧", "", 0, 1048574);
+  RNA_def_float(ot->srna, "coordinate_scale", 0.08f, 0.000001f, 1000.0f, "坐标缩放", "", 0.001f, 1.0f);
 }
 
 /* --- Rig attach / convert (mmd_tools namespace used by blander_ue5_link) ------ */
@@ -581,7 +577,7 @@ static wmOperatorStatus mmd_tools_attach_meshes_exec(bContext *C, wmOperator *op
   Main *bmain = CTX_data_main(C);
   Object *arm = CTX_data_active_object(C);
   if (arm == nullptr || arm->type != OB_ARMATURE) {
-    BKE_report(op->reports, RPT_ERROR, "Select an MMD model armature first");
+    BKE_report(op->reports, RPT_ERROR, "请先选中 MMD 模型骨架");
     return OPERATOR_CANCELLED;
   }
   /* Attach every mesh in the scene that has no parent to the active armature
@@ -598,7 +594,7 @@ static wmOperatorStatus mmd_tools_attach_meshes_exec(bContext *C, wmOperator *op
       unit_m4(ob->parentinv);
     }
   }
-  BKE_reportf(op->reports, RPT_INFO, "Attached meshes to MMD model '%s'", arm->id.name + 2);
+  BKE_reportf(op->reports, RPT_INFO, "已将网格挂接到 MMD 模型“%s”", arm->id.name + 2);
   return OPERATOR_FINISHED;
 }
 
@@ -606,20 +602,20 @@ static wmOperatorStatus mmd_tools_convert_to_mmd_model_exec(bContext *C, wmOpera
 {
   Object *ob = CTX_data_active_object(C);
   if (ob == nullptr) {
-    BKE_report(op->reports, RPT_ERROR, "No active object");
+    BKE_report(op->reports, RPT_ERROR, "没有活动对象");
     return OPERATOR_CANCELLED;
   }
   /* The native PMX importer already produces a full MMD model (root + armature +
    * meshes + morphs). Convert-to-MMD from an arbitrary rig is best expressed by
    * importing a PMX; this bridge reports that clearly. */
-  BKE_report(op->reports, RPT_INFO, "Use Import PMX to build an MMD model, or attach meshes");
+  BKE_report(op->reports, RPT_INFO, "请用“导入 PMX”构建 MMD 模型，或挂接网格");
   return OPERATOR_FINISHED;
 }
 
 void MMD_TOOLS_OT_attach_meshes(wmOperatorType *ot)
 {
-  ot->name = "Attach Meshes to Model";
-  ot->description = "Attach visible meshes to the selected MMD model (mmd_tools namespace)";
+  ot->name = "挂接网格到模型";
+  ot->description = "把可见网格挂接到选中的 MMD 模型（mmd_tools 命名空间）";
   ot->idname = "MMD_TOOLS_OT_attach_meshes";
   ot->exec = mmd_tools_attach_meshes_exec;
   ot->poll = WM_operator_winactive;
@@ -628,8 +624,8 @@ void MMD_TOOLS_OT_attach_meshes(wmOperatorType *ot)
 
 void MMD_TOOLS_OT_convert_to_mmd_model(wmOperatorType *ot)
 {
-  ot->name = "Convert to MMD Model";
-  ot->description = "Convert the active object into an MMD model (mmd_tools namespace)";
+  ot->name = "转换为 MMD 模型";
+  ot->description = "把当前活动对象转换为 MMD 模型（mmd_tools 命名空间）";
   ot->idname = "MMD_TOOLS_OT_convert_to_mmd_model";
   ot->exec = mmd_tools_convert_to_mmd_model_exec;
   ot->poll = WM_operator_winactive;
@@ -645,27 +641,27 @@ static wmOperatorStatus mmd_tools_edge_preview_setup_exec(bContext * /*C*/, wmOp
    * re-invoke it so the toon-edge shader logic is not duplicated. */
   wmOperatorType *native = WM_operatortype_find("WM_OT_mmd_edge_preview_setup", true);
   if (native == nullptr) {
-    BKE_report(op->reports, RPT_ERROR, "Native MMD edge preview operator not found");
+    BKE_report(op->reports, RPT_ERROR, "未找到原生 MMD 描边预览操作符");
     return OPERATOR_CANCELLED;
   }
   return OPERATOR_FINISHED;
 }
 
 static const EnumPropertyItem mmd_tools_edge_action_items[] = {
-    {0, "CREATE", 0, "Create", ""},
-    {1, "CLEAN", 0, "Clean", ""},
+    {0, "CREATE", 0, "创建", ""},
+    {1, "CLEAN", 0, "清除", ""},
     {0, nullptr, 0, nullptr, nullptr},
 };
 
 void MMD_TOOLS_OT_edge_preview_setup(wmOperatorType *ot)
 {
-  ot->name = "Edge Preview Setup";
-  ot->description = "Edge preview setup (mmd_tools namespace, native backend)";
+  ot->name = "描边预览设置";
+  ot->description = "MMD 描边预览设置（mmd_tools 命名空间，原生后端）";
   ot->idname = "MMD_TOOLS_OT_edge_preview_setup";
   ot->exec = mmd_tools_edge_preview_setup_exec;
   ot->poll = WM_operator_winactive;
   ot->flag = OPTYPE_UNDO | OPTYPE_REGISTER;
-  RNA_def_enum(ot->srna, "action", mmd_tools_edge_action_items, 0, "Action", "");
+  RNA_def_enum(ot->srna, "action", mmd_tools_edge_action_items, 0, "动作", "");
 }
 
 void MMD_TOOLS_OT_set_panel_language(wmOperatorType *ot);
@@ -827,13 +823,13 @@ static wmOperatorStatus mmd_tools_set_panel_language_exec(bContext *C, wmOperato
 
 void MMD_TOOLS_OT_set_panel_language(wmOperatorType *ot)
 {
-  ot->name = "Set MMD Tools Panel Language";
-  ot->description = "Choose the interface language for the MMD Tools panel";
+  ot->name = "设置面板语言";
+  ot->description = "选择 MMD 工具面板的界面语言";
   ot->idname = "MMD_TOOLS_OT_set_panel_language";
   ot->exec = mmd_tools_set_panel_language_exec;
   ot->poll = WM_operator_winactive;
   ot->flag = OPTYPE_REGISTER;
-  RNA_def_enum(ot->srna, "language", mmd_tools_panel_language_items, 0, "Language", "");
+  RNA_def_enum(ot->srna, "language", mmd_tools_panel_language_items, 0, "语言", "");
 }
 
 static bool mmd_tools_panel_poll(const bContext *C, PanelType * /*pt*/)
@@ -890,7 +886,7 @@ void ED_mmd_tools_panel_register(ARegionType *art)
   }
   PanelType *pt = MEM_new_zeroed<PanelType>("spacetype view3d panel mmd tools");
   STRNCPY_UTF8(pt->idname, "VIEW3D_PT_mmd_tools");
-  STRNCPY_UTF8(pt->label, N_("MMD Tools"));
+  STRNCPY_UTF8(pt->label, N_("MMD 工具"));
   STRNCPY_UTF8(pt->category, "MMD");
   STRNCPY_UTF8(pt->translation_context, BLT_I18NCONTEXT_DEFAULT_BPYRNA);
   pt->draw = mmd_tools_panel_draw;
