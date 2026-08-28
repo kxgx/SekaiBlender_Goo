@@ -625,6 +625,14 @@ static void mmd_tools_panel_draw(const bContext * /*C*/, Panel *panel)
       "MMD_TOOLS_OT_convert_to_mmd_model", IFACE_("Convert to MMD Model"), ICON_ARMATURE_DATA);
   rig_layout.op("MMD_TOOLS_OT_convert_materials", IFACE_("Convert Materials"), ICON_MATERIAL);
   rig_layout.op("MMD_TOOLS_OT_edge_preview_setup", IFACE_("Edge Preview"), ICON_SHADING_RENDERED);
+
+  /* Surface Goo's native MMD simulation capabilities under the same panel,
+   * reusing the native operators (registered as bpy.ops.wm.mmd_*). */
+  ui::Layout &sim_layout = layout.box();
+  sim_layout.label(IFACE_("Simulation / Bake"), ICON_NONE);
+  sim_layout.op("WM_OT_mmd_physics_start", IFACE_("Physics Start"), ICON_PLAY);
+  sim_layout.op("WM_OT_mmd_physics_bake", IFACE_("Bake Physics"), ICON_ACTION);
+  sim_layout.op("WM_OT_mmd_physics_stop", IFACE_("Physics Stop"), ICON_PAUSE);
 }
 
 void ED_mmd_tools_panel_register(ARegionType *art)
