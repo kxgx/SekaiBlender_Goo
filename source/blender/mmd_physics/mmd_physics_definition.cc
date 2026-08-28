@@ -21,6 +21,7 @@
 
 #include "DEG_depsgraph.hh"
 #include "DEG_depsgraph_build.hh"
+#include "DEG_depsgraph_query.hh"
 
 #include "ANIM_action.hh"
 #include "ANIM_fcurve.hh"
@@ -1951,19 +1952,26 @@ bool create_native_rigid_bodies(Main *bmain,
     joint_ob->rotmode = ROT_MODE_YXZ;
     copy_v3_v3(joint_ob->rot, joint.rotation.data());
 
-    if (rigid_collection != nullptr) {
-      BKE_collection_object_add(bmain, rigid_collection, joint_ob);
-    }
-    BKE_collection_object_add(bmain, rbw->constraints, joint_ob);
-
-    /* mmd_tools uses a GENERIC_SPRING constraint (6-DOF with springs). */
+    /* IMPORTANT: create the 6-DOF SPRING constraint FIRST and configure it, and
+     * ONLY THEN add the object to `rbw->constraints`. Adding to that collection
+     * triggers `BKE_rigidbody_main_collection_object_add`, which auto-creates a
+     * plain `RBC_TYPE_FIXED` constraint on any object without one. If we added the
+     * object to `rbw->constraints` first, that auto-FIXED constraint would make our
+     * later `BKE_rigidbody_create_constraint(..., RBC_TYPE_6DOF_SPRING)` return
+     * nullptr (the object already has a constraint), and every joint would end up
+     * as a FIXED constraint with no spring/limits -> the cloth would have no
+     * restoring force and free-fall. */
     RigidBodyCon *rbc = BKE_rigidbody_create_constraint(scene, joint_ob, RBC_TYPE_6DOF_SPRING);
     if (rbc == nullptr) {
+      report("MMD physics: joint[" + std::to_string(i) +
+             "] constraint could not be created; skipped");
       continue;
     }
     rbc->ob1 = ob_a;
     rbc->ob2 = ob_b;
-    rbc->spring_type = RBC_SPRING_TYPE1; /* btGeneric6DofSpringConstraint */
+    rbc->spring_type = RBC_SPRING_TYPE2; /* btGeneric6DofSpringConstraint2, the Blender
+                                          * default that mmd_tools' constraint_add leaves in
+                                          * place (SPRING1 caps damping at 1.0). */
 
     rbc->limit_lin_x_lower = joint.translation_min[0];
     rbc->limit_lin_x_upper = joint.translation_max[0];
@@ -1994,12 +2002,44 @@ bool create_native_rigid_bodies(Main *bmain,
      * BKE_rigidbody_create_constraint default enables it, so clear it. */
     rbc->flag &= ~RBC_FLAG_DISABLE_COLLISIONS;
 
-    rbc->spring_stiffness_x = joint.spring_translation[0];
-    rbc->spring_stiffness_y = joint.spring_translation[1];
-    rbc->spring_stiffness_z = joint.spring_translation[2];
-    rbc->spring_stiffness_ang_x = joint.spring_rotation[0];
-    rbc->spring_stiffness_ang_y = joint.spring_rotation[1];
-    rbc->spring_stiffness_ang_z = joint.spring_rotation[2];
+    /* mmd_tools soft-constraint: cloth joints are anchored with a
+     * Generic6DofSpringConstraint whose spring keeps the cloth from free-falling.
+     * The PMX file's spring constants here are 0 (this model relies on the
+     * mmd_tools "soft" default), so when a PMX spring value is 0 fall back to the
+     * Blender default that mmd_tools' constraint_add leaves in place
+     * (spring_stiffness = 10, spring_damping = 0.5). */
+    const float kSoftSpringStiffness = 10.0f;
+    const float kSoftSpringDamping = 0.5f;
+    auto spring_stiffness = [](float v, float fallback) {
+      return (v > 0.0f) ? v : fallback;
+    };
+    rbc->spring_stiffness_x = spring_stiffness(joint.spring_translation[0], kSoftSpringStiffness);
+    rbc->spring_stiffness_y = spring_stiffness(joint.spring_translation[1], kSoftSpringStiffness);
+    rbc->spring_stiffness_z = spring_stiffness(joint.spring_translation[2], kSoftSpringStiffness);
+    rbc->spring_stiffness_ang_x = spring_stiffness(joint.spring_rotation[0], kSoftSpringStiffness);
+    rbc->spring_stiffness_ang_y = spring_stiffness(joint.spring_rotation[1], kSoftSpringStiffness);
+    rbc->spring_stiffness_ang_z = spring_stiffness(joint.spring_rotation[2], kSoftSpringStiffness);
+
+    rbc->spring_damping_x = kSoftSpringDamping;
+    rbc->spring_damping_y = kSoftSpringDamping;
+    rbc->spring_damping_z = kSoftSpringDamping;
+    rbc->spring_damping_ang_x = kSoftSpringDamping;
+    rbc->spring_damping_ang_y = kSoftSpringDamping;
+    rbc->spring_damping_ang_z = kSoftSpringDamping;
+
+    /* Add the joint object to the sim constraint group collection only AFTER the
+     * constraint exists and is configured. Adding it earlier would let
+     * BKE_rigidbody_main_collection_object_add auto-create a plain FIXED constraint.
+     * That auto-FIXED constraint would silently replace our configured spring/limits
+     * (it has default values and no endpoints), so the joint would do nothing.
+     * `BKE_rigidbody_create_constraint` only allocates and returns the RigidBodyCon;
+     * it does NOT link it onto the object, so we must do that explicitly here.
+     */
+    joint_ob->rigidbody_constraint = rbc;
+    if (rigid_collection != nullptr) {
+      BKE_collection_object_add(bmain, rigid_collection, joint_ob);
+    }
+    BKE_collection_object_add(bmain, rbw->constraints, joint_ob);
 
     /* Remember the constraint that links this rigid-body pair so the NCC pass can
      * flip it to `disable_collisions` when the pair is a should-not-collide one. */
@@ -2117,6 +2157,128 @@ bool create_native_rigid_bodies(Main *bmain,
                 joint_ncc,
                 created_ncc);
   }
+
+  return true;
+}
+
+bool sync_rigidbodies_to_bake_start(Scene *scene,
+                                    Object *armature,
+                                    const MMDPhysicsDefinition &definition,
+                                    Depsgraph *depsgraph,
+                                    RigidBodyWorld *rbw)
+{
+  if (scene == nullptr || armature == nullptr || rbw == nullptr ||
+      armature->type != OB_ARMATURE || armature->pose == nullptr)
+  {
+    return false;
+  }
+  /* Mute the rigid-track Copy constraints so the bones evaluate purely from the
+   * animation (VMD) at the bake start frame, letting us read each bone's true
+   * animated pose (without the constraint forcing bone == rigid body). */
+  for (bPoseChannel *pchan = static_cast<bPoseChannel *>(armature->pose->chanbase.first);
+       pchan != nullptr;
+       pchan = pchan->next)
+  {
+    for (bConstraint *con = static_cast<bConstraint *>(pchan->constraints.first);
+         con != nullptr;
+         con = con->next)
+    {
+      if (STREQ(con->name, "mmd_tools_rigid_track")) {
+        con->flag |= CONSTRAINT_OFF;
+      }
+    }
+  }
+  /* Evaluate the depsgraph at the bake start frame so the bones carry the
+   * VMD-driven pose at `sfra` (used below to place the dynamic bodies). */
+  scene->r.cfra = scene->r.sfra;
+  if (depsgraph != nullptr) {
+    BKE_scene_graph_update_for_newframe(depsgraph);
+  }
+
+  /* The Armature (model-root) world matrix. The bones' `pose_mat` lives in the
+   * armature's local space, so each bone's world matrix is arm_world @ pose_mat. */
+  float arm_world[4][4];
+  compute_object_world_matrix(armature, arm_world);
+
+  /* Read the evaluated armature so the bone pose reflects the animated frame
+   * (the original `armature->pose` is not updated by the depsgraph). */
+  Object *arm_eval = DEG_get_evaluated(depsgraph, armature);
+  bPose *pose_eval = (arm_eval != nullptr) ? arm_eval->pose : armature->pose;
+  if (pose_eval == nullptr) {
+    return false;
+  }
+
+  const int rigid_count = int(definition.rigid_bodies.size());
+  FOREACH_COLLECTION_OBJECT_RECURSIVE_BEGIN (rbw->group, ob) {
+    if (ob->type != OB_MESH || ob->rigidbody_object == nullptr) {
+      continue;
+    }
+    IDProperty *props = ob->id.system_properties;
+    if (props == nullptr) {
+      continue;
+    }
+    IDProperty *idx_prop = IDP_GetPropertyTypeFromGroup(props, "mmd_physics_rigid_index", IDP_INT);
+    if (idx_prop == nullptr) {
+      continue;
+    }
+    const int ridx = IDP_int_get(idx_prop);
+    if (ridx < 0 || ridx >= rigid_count) {
+      continue;
+    }
+    const MMDRigidBodyDefinition &rigid = definition.rigid_bodies[ridx];
+    if (rigid.physics_type == 0 || !rigid.bone_resolved || rigid.blender_bone_name.empty()) {
+      continue;
+    }
+    bPoseChannel *pchan = BKE_pose_channel_find_name(pose_eval, rigid.blender_bone_name.c_str());
+    if (pchan == nullptr) {
+      continue;
+    }
+    /* World matrix of the bone at the bake start frame. */
+    float bone_world[4][4];
+    mul_m4_m4m4(bone_world, arm_world, pchan->pose_mat);
+
+    float loc[3], quat[4];
+    mat4_to_loc_quat(loc, quat, bone_world);
+
+    /* Seed the COLLIDER OBJECT (not just rbo->pos/orn): Blender builds each Bullet
+     * body from `ob->object_to_world()` (rigidbody.cc:`rigidbody_validate_sim_object`),
+     * so writing only `rbo->pos/orn` is ignored for initial body placement. Setting
+     * the object's loc/rot makes the depsgraph produce the correct world matrix when
+     * the sim world is (re)built at the bake start. */
+    copy_v3_v3(ob->loc, loc);
+    ob->rotmode = ROT_MODE_YXZ;
+    quat_to_eulO(ob->rot, EULER_ORDER_YXZ, quat);
+    /* Keep the rigid-body settings copy in sync too. */
+    copy_v3_v3(ob->rigidbody_object->pos, loc);
+    copy_v4_v4(ob->rigidbody_object->orn, quat);
+    /* Tag the object for transform re-evaluation so the depsgraph's evaluated
+     * copy (whose object_to_world() builds the Bullet body) picks up the seed. */
+    DEG_id_tag_update(&ob->id, ID_RECALC_TRANSFORM);
+  }
+  FOREACH_COLLECTION_OBJECT_RECURSIVE_END;
+
+  /* Unmute and re-evaluate so the bone constraints pick the seeded bodies back up. */
+  for (bPoseChannel *pchan = static_cast<bPoseChannel *>(armature->pose->chanbase.first);
+       pchan != nullptr;
+       pchan = pchan->next)
+  {
+    for (bConstraint *con = static_cast<bConstraint *>(pchan->constraints.first);
+         con != nullptr;
+         con = con->next)
+    {
+      if (STREQ(con->name, "mmd_tools_rigid_track")) {
+        con->flag &= ~CONSTRAINT_OFF;
+      }
+    }
+  }
+  if (depsgraph != nullptr) {
+    BKE_scene_graph_update_for_newframe(depsgraph);
+  }
+  /* Invalidate the baked cache and force the sim world to rebuild so every Bullet
+   * body is (re)created from the freshly seeded object transforms. This is what
+   * makes the bake start with the bodies aligned to the animated skeleton instead
+   * of the rest pose (which is the cause of the cloth falling). */
+  BKE_rigidbody_cache_reset(rbw);
   return true;
 }
 
@@ -2359,33 +2521,6 @@ bool bake_rigidbody_physics_to_bones(Main *bmain,
       float basis[4][4];
       BKE_armature_mat_pose_to_bone(chan_const, pose_arm, basis);
       BKE_pchan_apply_mat4(binding.pchan, basis, true);
-
-      /* Diagnostic (once, first binding at the first frame): show which step
-       * would push the bone away from the expected position. */
-      if (frame == start && binding.pchan == bindings.front().pchan) {
-        fprintf(stderr,
-                "[MMDPB] r_now_t=(%.3f,%.3f,%.3f) arm_t=(%.3f,%.3f,%.3f) "
-                "bone_arm_mat_t=(%.3f,%.3f,%.3f) b_now_t=(%.3f,%.3f,%.3f) "
-                "pose_arm_t=(%.3f,%.3f,%.3f) basis_t=(%.3f,%.3f,%.3f)\n",
-                r_now[0][3],
-                r_now[1][3],
-                r_now[2][3],
-                binding.arm_world[0][3],
-                binding.arm_world[1][3],
-                binding.arm_world[2][3],
-                binding.bone_arm_mat[0][3],
-                binding.bone_arm_mat[1][3],
-                binding.bone_arm_mat[2][3],
-                b_now[0][3],
-                b_now[1][3],
-                b_now[2][3],
-                pose_arm[0][3],
-                pose_arm[1][3],
-                pose_arm[2][3],
-                basis[0][3],
-                basis[1][3],
-                basis[2][3]);
-      }
 
       /* Insert keyframes on this bone's channels. */
       for (int c = 0; c < 3; c++) {

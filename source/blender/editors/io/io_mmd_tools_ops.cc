@@ -711,6 +711,37 @@ static wmOperatorStatus mmd_tools_ptcache_rigid_body_bake_exec(bContext *C, wmOp
   baker->quick_step = 1;
   BKE_ptcache_id_from_rigidbody(&baker->pid, sample_ob, rbw);
 
+  /* Seed each dynamic rigid body's initial transform to its bound bone's pose at
+   * the bake start frame so the physics starts aligned with the animated
+   * skeleton (avoids the cloth falling/exploding when the bake begins at a frame
+   * where the skeleton has moved from the rest pose). */
+  {
+    Main *bmain = CTX_data_main(C);
+    Depsgraph *depsgraph = CTX_data_depsgraph_pointer(C);
+    Object *active = CTX_data_active_object(C);
+    Object *armature = (active != nullptr && active->type == OB_ARMATURE) ? active : nullptr;
+    bool ambiguous = false;
+    Collection *model_root = blender::io::pmx::find_pmx_model_collection(bmain, active, ambiguous);
+    if (model_root != nullptr) {
+      if (armature == nullptr) {
+        FOREACH_COLLECTION_OBJECT_RECURSIVE_BEGIN (model_root, it) {
+          if (it->type == OB_ARMATURE) {
+            armature = it;
+            break;
+          }
+        }
+        FOREACH_COLLECTION_OBJECT_RECURSIVE_END;
+      }
+      mmd_physics::MMDPhysicsDefinition definition;
+      if (armature != nullptr &&
+          mmd_physics::deserialize_physics_definition(*model_root, definition, op->reports))
+      {
+        mmd_physics::sync_rigidbodies_to_bake_start(
+            scene, armature, definition, depsgraph, rbw);
+      }
+    }
+  }
+
   WM_cursor_wait(true);
   BKE_ptcache_bake(baker);
   WM_cursor_wait(false);

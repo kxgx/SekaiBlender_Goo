@@ -21,6 +21,7 @@ struct Depsgraph;
 struct Main;
 struct Object;
 struct ReportList;
+struct RigidBodyWorld;
 struct Scene;
 
 }  // namespace blender
@@ -224,6 +225,19 @@ bool bake_rigidbody_physics_to_bones(Main *bmain,
                                      const MMDPhysicsDefinition &definition,
                                      ReportList *reports,
                                      Depsgraph *depsgraph);
+
+/** Before a native rigid-body ptcache bake, re-seed every dynamic rigid body's
+ * initial transform (`rbo->pos/orn`) to its bound bone's pose at the bake start
+ * frame (`scene->r.sfra`). Dynamic bodies are otherwise left at the rest pose
+ * from build time, which misaligns them with the animated skeleton when the bake
+ * does not begin on the rest frame (causing the cloth to fall/explode). The
+ * rigid-track Copy constraints are temporarily muted so the bones evaluate purely
+ * from the animation while the seed positions are read. */
+bool sync_rigidbodies_to_bake_start(Scene *scene,
+                                    Object *armature,
+                                    const MMDPhysicsDefinition &definition,
+                                    Depsgraph *depsgraph,
+                                    RigidBodyWorld *rbw);
 
 /** Validate a persisted definition against the current Armature data. */
 MMDPhysicsMappingReport validate_physics_mapping(const MMDPhysicsDefinition &definition,
