@@ -15,6 +15,11 @@ namespace blender {
 struct Main;
 struct Object;
 struct ReportList;
+struct bContext;
+struct wmOperator;
+
+/** Partner of #wmOperatorStatus (declared fully in DNA_windowmanager_enums.h). */
+enum wmOperatorStatus;
 
 void WM_OT_vmd_import(wmOperatorType *ot);
 void WM_OT_vmd_camera_import(wmOperatorType *ot);
@@ -28,6 +33,12 @@ int vmd_suspend_all_ik_after_bake(Main *bmain, Object *ob);
  * 播放模式,供 mmd_tools 命名空间导入代理复用,避免"腿找原点/姿态破坏"
  * (iTaSC 或原生 CCD 双重求解让 IK 覆盖 FK)。返回挂起的约束数。 */
 int vmd_tools_prepare_imported_action(Main *bmain, Object *ob, ReportList *reports);
+
+/** mmd_tools 命名空间导入代理：直接复跑原生 `WM_OT_vmd_import` 的执行体,
+ * 保证 mmd_tools 导入与原生导入逐字节一致（相同的骨架解析、动作槽绑定、
+ * 约束挂起、Rigify 播放模式与 depsgraph 刷新）。这样 mmd_tools.import_vmd
+ * 的驱动结果与原生 wm.vmd_import 完全相同。 */
+wmOperatorStatus vmd_import_operator_relay(bContext *C, wmOperator *op);
 
 namespace ed::io {
 void vmd_file_handler_add();

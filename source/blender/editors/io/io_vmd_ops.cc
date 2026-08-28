@@ -998,6 +998,14 @@ void wm_vmd_camera_export_draw(bContext * /*C*/, wmOperator *op)
 
 }  // namespace
 
+/** mmd_tools 命名空间导入代理：复跑原生 wm_vmd_import_exec,保证与原生导入
+ * 逐字节一致。原生 exec 在匿名命名空间中,仅本翻译单元可调用,因此暴露这个
+ * 公共转发器供 mmd_tools_ops.cc 复用(原生导入已证明能正确驱动骨骼姿态)。 */
+wmOperatorStatus vmd_import_operator_relay(bContext *C, wmOperator *op)
+{
+  return wm_vmd_import_exec(C, op);
+}
+
 /* 烘焙后 FK 动作覆盖全部链骨，无条件挂起所有 MMD 近似 IK 与原生 CCD，
  * 避免 iTaSC 继续把腿解向 足IK 目标、与烘焙动作的纯 FK 结果互相覆盖。
  * 手动 GPU 烘焙（WM_OT_mmd_bake_motion）完成后调用。 */

@@ -71,6 +71,14 @@
 
 namespace blender {
 
+/* 与原生 WM_OT_vmd_import 的 "target" 枚举一致(ACTIVE / Auto 解析器)。
+ * 委托给 native exec 时,该枚举值 0 即 "Active / Auto",跳过指定目标。
+ * 完整的 armature 列表由 native exec 内的 item 函数动态生成。 */
+static const EnumPropertyItem MMD_TOOLS_TARGET_ITEMS[] = {
+    {0, "ACTIVE", 0, "Active / Auto", "Delegated to the native VMD target resolver"},
+    {0, nullptr, 0, nullptr, nullptr},
+};
+
 static bool mmd_tools_active_armature_poll(bContext *C)
 {
   Object *ob = CTX_data_active_object(C);
@@ -284,83 +292,14 @@ void MMD_TOOLS_OT_convert_materials(wmOperatorType *ot)
 
 static wmOperatorStatus mmd_tools_import_vmd_exec(bContext *C, wmOperator *op)
 {
-  char filepath[FILE_MAX];
-  RNA_string_get(op->ptr, "filepath", filepath);
-  if (filepath[0] == '\0') {
-    return OPERATOR_CANCELLED;
-  }
-  Main *bmain = CTX_data_main(C);
-  Object *target = nullptr;
-  Object *active = CTX_data_active_object(C);
-  if (active != nullptr && active->type == OB_ARMATURE) {
-    target = active;
-  }
-  else {
-    /* Fallback: first Armature in the scene. */
-    for (Object *ob = static_cast<Object *>(bmain->objects.first); ob != nullptr;
-         ob = static_cast<Object *>(ob->id.next))
-    {
-      if (ob->type == OB_ARMATURE) {
-        target = ob;
-        break;
-      }
-    }
-  }
-  if (target == nullptr) {
-    BKE_report(op->reports, RPT_ERROR, "VMD 导入需要场景中存在骨架对象");
-    return OPERATOR_CANCELLED;
-  }
-
-  blender::io::vmd::VMDImportOptions options;
-  options.frame_offset = RNA_int_get(op->ptr, "frame_offset");
-  options.replace_existing_action = RNA_boolean_get(op->ptr, "replace_existing_action");
-  options.coordinate_scale = RNA_float_get(op->ptr, "coordinate_scale");
-  options.use_linear_interpolation = !RNA_boolean_get(op->ptr, "use_vmd_bezier_interpolation");
-  options.use_vmd_bezier_interpolation = RNA_boolean_get(op->ptr, "use_vmd_bezier_interpolation");
-  options.use_mirror = RNA_boolean_get(op->ptr, "use_mirror");
-  options.use_pose_mode = RNA_boolean_get(op->ptr, "use_pose_mode");
-  options.include_ik = RNA_boolean_get(op->ptr, "include_ik");
-  options.update_scene_settings = RNA_boolean_get(op->ptr, "update_scene_settings");
-  options.use_nla = RNA_boolean_get(op->ptr, "use_nla");
-
-  Object *morph_controller = nullptr;
-  /* The native PMX importer creates a `PMXMorphControl` mesh under the model
-   * root. Import bone + morph animation when it is present (mirrors the native
-   * WM_OT_vmd_import path), otherwise bone-only. */
-  for (Object *ob = static_cast<Object *>(bmain->objects.first); ob != nullptr;
-       ob = static_cast<Object *>(ob->id.next))
-  {
-    if (ob->type == OB_MESH && strncmp(ob->id.name + 2, "PMXMorphControl", 15) == 0) {
-      morph_controller = ob;
-      break;
-    }
-  }
-
-  blender::io::vmd::VMDImportReport result;
-  const bool success = (morph_controller != nullptr) ?
-                           blender::io::vmd::import_vmd_action_with_morphs(
-                               bmain, *target, *morph_controller, filepath, options, op->reports,
-                               result) :
-                           blender::io::vmd::import_vmd_action(
-                               bmain, *target, filepath, options, op->reports, result);
-  if (!success) {
-    return OPERATOR_CANCELLED;
-  }
-  /* 与原生 VMD 导入一致的关键导入后处理：挂起会双重叠加的轴/追加近似约束、
-   * 还原 Rigify 播放模式,避免 iTaSC/原生 CCD 双重求解把腿拉向原点。 */
-  const int suspended = vmd_tools_prepare_imported_action(bmain, target, op->reports);
-  if (suspended > 0) {
-    BKE_reportf(op->reports,
-                RPT_INFO,
-                "已挂起 %d 个 MMD 轴近似约束（IK 链由 VMD 开关轨道驱动）",
-                suspended);
-  }
-  BKE_reportf(op->reports,
-              RPT_INFO,
-              "VMD 导入完成：%d 条骨骼轨道，%d 骨骼帧",
-              result.action.mapped_track_count,
-              result.read.bone_frame_count);
-  return OPERATOR_FINISHED;
+  /* 直接复跑原生 `WM_OT_vmd_import` 的执行体,保证 mmd_tools.import_vmd 与
+   * 原生 wm.vmd_import 逐字节一致：相同的目标骨架解析、动作槽(slot)绑定、
+   * MMD 近似约束挂起、Rigify 播放模式、depsgraph 刷新与场景帧范围更新。
+   * 之前手写一份 options + import_vmd_action 的"等价"导入,虽然成功创建了
+   * 动作数据(753 条 fcurve)并绑定到正确的动作槽,但缺少这些导入后评估步骤,
+   * 导致姿态骨骼停在静置位(左腿 / 上半身不驱动)。委托原生执行体即可消除
+   * 该分歧,让依赖 mmd_tools 的插件调用结果与原生导入完全等同。 */
+  return vmd_import_operator_relay(C, op);
 }
 
 static wmOperatorStatus mmd_tools_export_vmd_exec(bContext *C, wmOperator *op)
@@ -426,7 +365,8 @@ void MMD_TOOLS_OT_import_vmd(wmOperatorType *ot)
                                  FILE_TYPE_FOLDER,
                                  FILE_BLENDER,
                                  FILE_OPENFILE,
-                                 WM_FILESEL_FILEPATH | WM_FILESEL_FILES | WM_FILESEL_SHOW_PROPS,
+                                 WM_FILESEL_FILEPATH | WM_FILESEL_FILES | WM_FILESEL_DIRECTORY |
+                                     WM_FILESEL_SHOW_PROPS,
                                  FILE_DEFAULTDISPLAY,
                                  FILE_SORT_DEFAULT);
   auto *prop = RNA_def_string(ot->srna, "filter_glob", "*.vmd", 0, "Extension Filter", "");
@@ -439,6 +379,10 @@ void MMD_TOOLS_OT_import_vmd(wmOperatorType *ot)
   RNA_def_boolean(ot->srna, "include_ik", true, "包含 IK", "");
   RNA_def_boolean(ot->srna, "update_scene_settings", true, "更新场景设置", "");
   RNA_def_boolean(ot->srna, "use_nla", false, "使用 NLA", "");
+  /* 与原生 WM_OT_vmd_import 一致：默认导入表情，走 PMX Morph Controller。
+   * 委托到 native exec 时该属性必须存在,避免 RNA_boolean_get 打 "not found"。 */
+  RNA_def_boolean(ot->srna, "import_morphs", true, "导入表情", "");
+  RNA_def_enum(ot->srna, "target", MMD_TOOLS_TARGET_ITEMS, 0, "目标骨架", "应用 VMD 动作的骨架");
   RNA_def_boolean(ot->srna, "use_vmd_bezier_interpolation", true, "VMD 贝塞尔", "");
 }
 
