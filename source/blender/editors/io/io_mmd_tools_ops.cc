@@ -64,6 +64,9 @@
 
 #  include "exporter/pmx_export.hh"
 
+#  include <algorithm>
+#  include <string>
+
 #  include <cstring>
 
 namespace blender {
@@ -665,6 +668,8 @@ void MMD_TOOLS_OT_edge_preview_setup(wmOperatorType *ot)
   RNA_def_enum(ot->srna, "action", mmd_tools_edge_action_items, 0, "Action", "");
 }
 
+void MMD_TOOLS_OT_set_panel_language(wmOperatorType *ot);
+
 void mmd_tools_ops_register_operators()
 {
   WM_operatortype_append(MMD_TOOLS_OT_import_pmx);
@@ -677,9 +682,159 @@ void mmd_tools_ops_register_operators()
   WM_operatortype_append(MMD_TOOLS_OT_convert_to_mmd_model);
   WM_operatortype_append(MMD_TOOLS_OT_edge_preview_setup);
   WM_operatortype_append(MMD_TOOLS_OT_convert_materials);
+  WM_operatortype_append(MMD_TOOLS_OT_set_panel_language);
 }
 
 /* --- Native mmd_tools N-panel (sidebar) --------------------------------------- */
+
+enum class MMDToolsPanelLanguage : int {
+  Chinese = 0,
+  English = 1,
+  Japanese = 2,
+};
+
+static const EnumPropertyItem mmd_tools_panel_language_items[] = {
+    {int(MMDToolsPanelLanguage::Chinese), "CHINESE", 0, "中文", "使用中文界面"},
+    {int(MMDToolsPanelLanguage::English), "ENGLISH", 0, "English", "Use the English interface"},
+    {int(MMDToolsPanelLanguage::Japanese), "JAPANESE", 0, "日本語", "日本語のインターフェースを使用"},
+    {0, nullptr, 0, nullptr, nullptr},
+};
+
+/* Strings shown by the mmd_tools sidebar panel, translated per language. */
+struct MMDToolsPanelText {
+  const char *import_export;
+  const char *import_pmx;
+  const char *export_pmx;
+  const char *import_vmd;
+  const char *export_vmd;
+  const char *import_vmd_cam;
+  const char *export_vmd_cam;
+  const char *mmd_model;
+  const char *attach_meshes;
+  const char *convert_model;
+  const char *convert_materials;
+  const char *edge_preview;
+  const char *simulation;
+  const char *physics_start;
+  const char *physics_bake;
+  const char *physics_stop;
+};
+
+const MMDToolsPanelText &mmd_tools_panel_text(const MMDToolsPanelLanguage language)
+{
+  static const MMDToolsPanelText chinese = {
+      "导入 / 导出",
+      "导入 PMX...",
+      "导出 PMX...",
+      "导入 VMD...",
+      "导出 VMD...",
+      "导入 VMD 相机...",
+      "导出 VMD 相机...",
+      "MMD 模型",
+      "挂接网格",
+      "转换为 MMD 模型",
+      "转换材质",
+      "描边预览",
+      "模拟 / 烘焙",
+      "物理开始",
+      "烘焙物理",
+      "物理停止"};
+  static const MMDToolsPanelText english = {
+      "Import / Export",
+      "Import PMX...",
+      "Export PMX...",
+      "Import VMD...",
+      "Export VMD...",
+      "Import VMD Cam...",
+      "Export VMD Cam...",
+      "MMD Model",
+      "Attach Meshes",
+      "Convert to MMD Model",
+      "Convert Materials",
+      "Edge Preview",
+      "Simulation / Bake",
+      "Physics Start",
+      "Bake Physics",
+      "Physics Stop"};
+  static const MMDToolsPanelText japanese = {
+      "読み込み / 書き出し",
+      "PMX を読み込み...",
+      "PMX を書き出し...",
+      "VMD を読み込み...",
+      "VMD を書き出し...",
+      "VMD カメラを読み込み...",
+      "VMD カメラを書き出し...",
+      "MMD モデル",
+      "メッシュを接続",
+      "MMD モデルに変換",
+      "マテリアルを変換",
+      "エッジプレビュー",
+      "シミュレーション / ベイク",
+      "物理開始",
+      "物理をベイク",
+      "物理停止"};
+  switch (language) {
+    case MMDToolsPanelLanguage::English:
+      return english;
+    case MMDToolsPanelLanguage::Japanese:
+      return japanese;
+    case MMDToolsPanelLanguage::Chinese:
+    default:
+      return chinese;
+  }
+}
+
+/* Language is stored on the Scene (like the MMD physics panel). Default 中文. */
+constexpr const char *kMMDToolsLanguageProperty = "mmd_tools_panel_language";
+
+static MMDToolsPanelLanguage scene_mmd_tools_panel_language(Scene *scene)
+{
+  if (scene != nullptr) {
+    IDProperty *props = IDP_GetProperties(&scene->id);
+    if (props != nullptr) {
+      if (IDProperty *prop = IDP_GetPropertyTypeFromGroup(
+              props, kMMDToolsLanguageProperty, IDP_INT))
+      {
+        return MMDToolsPanelLanguage(std::clamp(IDP_int_get(prop), 0, 2));
+      }
+    }
+  }
+  return MMDToolsPanelLanguage::Chinese;
+}
+
+static void scene_mmd_tools_panel_language_set(Scene *scene, const MMDToolsPanelLanguage language)
+{
+  if (scene == nullptr) {
+    return;
+  }
+  IDProperty *props = IDP_EnsureProperties(&scene->id);
+  const int value = std::clamp(int(language), 0, 2);
+  IDProperty *prop = IDP_GetPropertyTypeFromGroup(props, kMMDToolsLanguageProperty, IDP_INT);
+  if (prop != nullptr) {
+    IDP_int_set(prop, value);
+  }
+  else {
+    IDP_AddToGroup(props, IDP_NewInt(value, kMMDToolsLanguageProperty));
+  }
+}
+
+static wmOperatorStatus mmd_tools_set_panel_language_exec(bContext *C, wmOperator *op)
+{
+  scene_mmd_tools_panel_language_set(
+      CTX_data_scene(C), MMDToolsPanelLanguage(RNA_enum_get(op->ptr, "language")));
+  return OPERATOR_FINISHED;
+}
+
+void MMD_TOOLS_OT_set_panel_language(wmOperatorType *ot)
+{
+  ot->name = "Set MMD Tools Panel Language";
+  ot->description = "Choose the interface language for the MMD Tools panel";
+  ot->idname = "MMD_TOOLS_OT_set_panel_language";
+  ot->exec = mmd_tools_set_panel_language_exec;
+  ot->poll = WM_operator_winactive;
+  ot->flag = OPTYPE_REGISTER;
+  RNA_def_enum(ot->srna, "language", mmd_tools_panel_language_items, 0, "Language", "");
+}
 
 static bool mmd_tools_panel_poll(const bContext *C, PanelType * /*pt*/)
 {
@@ -688,34 +843,44 @@ static bool mmd_tools_panel_poll(const bContext *C, PanelType * /*pt*/)
   return CTX_data_active_object(C) != nullptr;
 }
 
-static void mmd_tools_panel_draw(const bContext * /*C*/, Panel *panel)
+static void mmd_tools_panel_draw(const bContext *C, Panel *panel)
 {
   ui::Layout &layout = *panel->layout;
+  Scene *scene = CTX_data_scene(C);
+  const MMDToolsPanelText &text = mmd_tools_panel_text(scene_mmd_tools_panel_language(scene));
+
+  /* Language switcher at the top (mirrors the MMD physics panel). */
+  const char *language_name = mmd_tools_panel_language_items[int(scene_mmd_tools_panel_language(
+      scene))]
+                                  .name;
+  layout.op_menu_enum(C,
+                      "MMD_TOOLS_OT_set_panel_language",
+                      "language",
+                      std::string(text.import_export) + ": " + language_name,
+                      ICON_WORLD);
 
   ui::Layout &io_layout = layout.box();
-  io_layout.label(IFACE_("Import / Export"), ICON_NONE);
-  io_layout.op("MMD_TOOLS_OT_import_pmx", IFACE_("Import PMX..."), ICON_IMPORT);
-  io_layout.op("MMD_TOOLS_OT_export_pmx", IFACE_("Export PMX..."), ICON_EXPORT);
-  io_layout.op("MMD_TOOLS_OT_import_vmd", IFACE_("Import VMD..."), ICON_IMPORT);
-  io_layout.op("MMD_TOOLS_OT_export_vmd", IFACE_("Export VMD..."), ICON_EXPORT);
-  io_layout.op("MMD_TOOLS_OT_vmd_camera_import", IFACE_("Import VMD Cam..."), ICON_CAMERA_DATA);
-  io_layout.op("MMD_TOOLS_OT_vmd_camera_export", IFACE_("Export VMD Cam..."), ICON_CAMERA_DATA);
+  io_layout.label(text.import_export, ICON_NONE);
+  io_layout.op("MMD_TOOLS_OT_import_pmx", text.import_pmx, ICON_IMPORT);
+  io_layout.op("MMD_TOOLS_OT_export_pmx", text.export_pmx, ICON_EXPORT);
+  io_layout.op("MMD_TOOLS_OT_import_vmd", text.import_vmd, ICON_IMPORT);
+  io_layout.op("MMD_TOOLS_OT_export_vmd", text.export_vmd, ICON_EXPORT);
+  io_layout.op("MMD_TOOLS_OT_vmd_camera_import", text.import_vmd_cam, ICON_CAMERA_DATA);
+  io_layout.op("MMD_TOOLS_OT_vmd_camera_export", text.export_vmd_cam, ICON_CAMERA_DATA);
 
   ui::Layout &rig_layout = layout.box();
-  rig_layout.label(IFACE_("MMD Model"), ICON_NONE);
-  rig_layout.op("MMD_TOOLS_OT_attach_meshes", IFACE_("Attach Meshes"), ICON_OBJECT_DATA);
-  rig_layout.op(
-      "MMD_TOOLS_OT_convert_to_mmd_model", IFACE_("Convert to MMD Model"), ICON_ARMATURE_DATA);
-  rig_layout.op("MMD_TOOLS_OT_convert_materials", IFACE_("Convert Materials"), ICON_MATERIAL);
-  rig_layout.op("MMD_TOOLS_OT_edge_preview_setup", IFACE_("Edge Preview"), ICON_SHADING_RENDERED);
+  rig_layout.label(text.mmd_model, ICON_NONE);
+  rig_layout.op("MMD_TOOLS_OT_attach_meshes", text.attach_meshes, ICON_OBJECT_DATA);
+  rig_layout.op("MMD_TOOLS_OT_convert_to_mmd_model", text.convert_model, ICON_ARMATURE_DATA);
+  rig_layout.op("MMD_TOOLS_OT_convert_materials", text.convert_materials, ICON_MATERIAL);
+  rig_layout.op("MMD_TOOLS_OT_edge_preview_setup", text.edge_preview, ICON_SHADING_RENDERED);
 
-  /* Surface Goo's native MMD simulation capabilities under the same panel,
-   * reusing the native operators (registered as bpy.ops.wm.mmd_*). */
+  /* Surface Goo's native MMD simulation capabilities under the same panel. */
   ui::Layout &sim_layout = layout.box();
-  sim_layout.label(IFACE_("Simulation / Bake"), ICON_NONE);
-  sim_layout.op("WM_OT_mmd_physics_start", IFACE_("Physics Start"), ICON_PLAY);
-  sim_layout.op("WM_OT_mmd_physics_bake", IFACE_("Bake Physics"), ICON_ACTION);
-  sim_layout.op("WM_OT_mmd_physics_stop", IFACE_("Physics Stop"), ICON_PAUSE);
+  sim_layout.label(text.simulation, ICON_NONE);
+  sim_layout.op("WM_OT_mmd_physics_start", text.physics_start, ICON_PLAY);
+  sim_layout.op("WM_OT_mmd_physics_bake", text.physics_bake, ICON_ACTION);
+  sim_layout.op("WM_OT_mmd_physics_stop", text.physics_stop, ICON_PAUSE);
 }
 
 void ED_mmd_tools_panel_register(ARegionType *art)
