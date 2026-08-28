@@ -29,6 +29,7 @@
 #ifdef WITH_IO_PMX
 #  include "io_mmd_physics_ops.hh"
 #  include "io_mmd_render_ops.hh"
+#  include "io_mmd_tools_ops.hh"
 #endif
 
 namespace blender {
@@ -119,6 +120,9 @@ void ED_operatortypes_io()
   /* MMD render operators (own "MMD Render" sidebar tab). */
   WM_operatortype_append(WM_OT_mmd_render_set_panel_language);
   WM_operatortype_append(WM_OT_mmd_edge_preview_setup);
+
+  /* Goo-native mmd_tools namespace operators: `bpy.ops.mmd_tools.*`. */
+  mmd_tools_ops_register_operators();
 #endif
 
 #ifdef WITH_IO_FBX
