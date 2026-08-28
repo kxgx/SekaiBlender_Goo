@@ -31,13 +31,13 @@
 
 ## Download
 
-A prebuilt Windows x64 package is published on the [Releases](https://github.com/kxgx/SekaiBlender_Goo/releases/latest) page, so building from source is optional.
+A prebuilt Windows x64 installer is published on the [Releases](https://github.com/kxgx/SekaiBlender_Goo/releases/latest) page, so building from source is optional.
 
-1. Download `sekaiblender-1.0-git.<hash>-windows64.zip` (about 329 MB) from the latest release.
-2. Extract it anywhere. No installer and no administrator rights are required.
-3. Run `SekaiBlender-launcher.exe` from the extracted folder. Use `SekaiBlender.exe` directly if you want the console window attached.
+1. Download `SekaiBlender-Goo-<version>.msi` (about 320 MB) from the latest release.
+2. Run the installer. It installs **per-user** into `%LOCALAPPDATA%\SekaiBlender Goo` (no administrator rights required) and adds a Start menu shortcut.
+3. Launch via the Start menu shortcut, or run `SekaiBlender-launcher.exe` from the install folder. Use `SekaiBlender.exe` directly if you want the console window attached.
 
-Keep the extracted folder intact: the executables load the `5.3` runtime directory that sits next to them.
+Newer versions upgrade in place; the installer keeps the install path and refreshes the runtime `5.3` tree automatically.
 
 ## At A Glance
 
