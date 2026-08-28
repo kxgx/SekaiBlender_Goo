@@ -238,15 +238,10 @@ bool MMDPhysicsWorld::initialize(const MMDPhysicsDefinition &def,
     runtime.collision_group_index = rigid_def.collision_group;
     runtime.no_collision_group = rigid_def.no_collision_group;
     runtime.collision_group = uint16_t(1u << rigid_def.collision_group);
-    /* Store the effective ENABLE mask (PMX-spec complement, plus group 0 for
-     * dynamic bodies so driven cloth also collides with the body) so the
-     * diagnostics sample agrees with the broadphase filter applied in
-     * create_rigid_body_. */
-    runtime.collision_mask = disable_rigid_body_contacts_ ?
-                                 uint16_t(0) :
-                                 uint16_t(0xFFFFu &
-                                          (~rigid_def.no_collision_group |
-                                           (is_dynamic_type(rigid_def.physics_type) ? 0x0001u : 0)));
+    /* mmd_tools parity: the broadphase collides with everything (all 16 groups);
+     * per-pair "do NOT collide" is expressed via NCC constraints, not the mask.
+     * Store the effective mask (0xFFFF) so diagnostics agree with the broadphase. */
+    runtime.collision_mask = disable_rigid_body_contacts_ ? uint16_t(0) : uint16_t(0xFFFF);
     runtime.name_local = rigid_def.name_local;
     runtime.blender_bone_name = rigid_def.blender_bone_name;
     runtime.initial_transform = body->getWorldTransform();
@@ -467,29 +462,24 @@ btRigidBody *MMDPhysicsWorld::create_rigid_body_(const MMDRigidBodyDefinition &d
   }
 
   const short group = short(1u << def.collision_group);
-  /* PMX `no_collision_group` is a per-group DISABLE mask (bit i set = do NOT
-   * collide with group i). Bullet's collision mask is the ENABLE mask (bit i
-   * set = collide with group i), and collision fires when
-   * `(groupA & maskB) || (groupB & maskA)` is non-zero.
+  /* mmd_tools parity: the plugin does NOT filter collisions through a Bullet
+   * group/mask broadphase. Blender's native rigid bodies all live in one
+   * `rigidbody_world` and collide with each other by default; the PMX
+   * "do NOT collide" relationship is expressed entirely through per-pair
+   * non-collision constraints built by `apply_mmd_tools_ncc_` (a rigid-body
+   * constraint with `disable_collisions=True`) for pairs that are close
+   * enough (`1.5 * (range_a + range_b) * 0.5`). Therefore the broadphase mask
+   * must be "collide with everything" (all 16 groups), so every pair is
+   * allowed to contact and only the explicit NCC pairs get disabled.
    *
-   * The correct per-spec enable mask is the complement `~no_collision_group`.
-   * Empirically on Vodyanitsa the skirt (group 3, nocoll=0xFFF7) has bit 3
-   * clear (= self-collide) but bit 0 set (= do NOT collide with the body). So
-   * `~no_collision_group` alone makes it self-collide (fixing the original
-   * "前后重合" where panels passed through each other) but drops all body/leg
-   * contact -> the skirt no longer has collision volume against the body.
-   *
-   * For a cloth/dynamic body we always want it to also collide with the body it
-   * is driven by (group 0 is the conventional MMD body group), otherwise the
-   * legs/torso pass straight through the skirt. OR in group 0 for dynamic
-   * bodies only: this keeps the skirt self-colliding AND pushing against the
-   * legs, while static bodies keep their exact PMX-spec mask.
-   */
+   * Setting the mask to the raw PMX `no_collision_group` (or its complement
+   * `~no_collision_group`) instead hard-filters broadphase pairs and makes the
+   * skirt either never self-collide (raw mask -> 前后重合) or never contact
+   * the body (complement -> "no collision volume"), neither of which matches
+   * mmd_tools. */
   const short mask = disable_rigid_body_contacts_ ?
                          short(0) :
-                         short(0xFFFFu &
-                               (~def.no_collision_group |
-                                (is_dynamic_type(def.physics_type) ? short(1u << 0) : 0)));
+                         short(0xFFFF);
   dynamics_world_->addRigidBody(body, group, mask);
 
   /* Store PMX index for cross-referencing from Bullet back to PMX data. */
@@ -638,14 +628,16 @@ btGeneric6DofSpringConstraint *MMDPhysicsWorld::create_joint_(const MMDJointDefi
   constraint->setEquilibriumPoint();
   constraint->enableFeedback(true);
 
-  /* Match MMP's joint-pair decision after the mmd_tools mask inversion. */
+  /* mmd_tools parity: a joint pair disables collision only when the PMX
+   * `no_collision_group` (a "can NOT collide with group i" mask, bit set = do
+   * not collide) says so — i.e. either body lists the other body's group in its
+   * no-collision mask. mmd_tools defaults `disable_collisions=False` and only
+   * flips it to True for such pairs (Model.buildRigids). */
   const RigidBodyRuntime &runtime_a = body_runtimes_[def.rigid_a_index];
   const RigidBodyRuntime &runtime_b = body_runtimes_[def.rigid_b_index];
-  const uint16_t no_collision_mask_a = uint16_t(0xFFFFu & ~runtime_a.no_collision_group);
-  const uint16_t no_collision_mask_b = uint16_t(0xFFFFu & ~runtime_b.no_collision_group);
   const bool disable_collisions =
-      (no_collision_mask_a & runtime_b.collision_group) != 0 ||
-      (no_collision_mask_b & runtime_a.collision_group) != 0;
+      (runtime_a.no_collision_group & runtime_b.collision_group) != 0 ||
+      (runtime_b.no_collision_group & runtime_a.collision_group) != 0;
   dynamics_world_->addConstraint(constraint, disable_collisions);
   return constraint;
 }
@@ -1591,9 +1583,19 @@ void MMDPhysicsWorld::apply_joint_collision_exclusions_()
 
 void MMDPhysicsWorld::apply_mmd_tools_ncc_()
 {
-  /* Reproduce MMP's proximity NCC over the mmd_tools-inverted candidate
-   * groups. This compatibility behavior is intentionally kept together with
-   * the Bullet masks above; changing either side requires viewport testing. */
+  /* mmd_tools parity: reproduce `Model.buildRigids` / `__createNonCollisionConstraint`.
+   *
+   * mmd_tools stores the PMX `no_collision_group` as a 16-bool `collision_group_mask`
+   * where a True entry means "this body does NOT collide with that group". The plugin
+   * does NOT filter contacts in the broadphase (Blender's native rigid bodies all
+   * collide by default); instead it adds a `GENERIC` rigid-body constraint with
+   * `disable_collisions=True` for each pair that (a) the mask says should NOT collide
+   * and (b) is close enough, exactly like MikuMikuPhysics' non-collision constraints.
+   *
+   * Here we mirror that with Bullet `setIgnoreCollisionCheck` for the same pairs.
+   * The mask direction is `no_collision_group` (raw PMX value): bit i set means
+   * "do NOT collide with group i", matching mmd_tools' "can NOT collide" semantics.
+   */
   if (dynamics_world_ == nullptr || body_runtimes_.is_empty()) {
     return;
   }
@@ -1611,13 +1613,18 @@ void MMDPhysicsWorld::apply_mmd_tools_ncc_()
 
   for (int a = 0; a < int(body_runtimes_.size()); ++a) {
     RigidBodyRuntime &body_a = body_runtimes_[a];
-    const uint16_t no_collision_mask_a = uint16_t(0xFFFFu & ~body_a.no_collision_group);
+    /* Bits set in no_collision_group = groups this body must NOT collide with
+     * (mmd_tools "can NOT collide with" mask). */
+    const uint16_t disabled_a = body_a.no_collision_group;
     for (int b = a + 1; b < int(body_runtimes_.size()); ++b) {
       RigidBodyRuntime &body_b = body_runtimes_[b];
-      const uint16_t no_collision_mask_b = uint16_t(0xFFFFu & ~body_b.no_collision_group);
+      const uint16_t disabled_b = body_b.no_collision_group;
+      /* Pair should NOT collide when either body lists the OTHER body's group in
+       * its "no-collision-with" mask, i.e. bit(body_b.collision_group) set in
+       * disabled_a, OR bit(body_a.collision_group) set in disabled_b. */
       const bool mask_candidate =
-          (no_collision_mask_a & body_b.collision_group) != 0 ||
-          (no_collision_mask_b & body_a.collision_group) != 0;
+          (disabled_a & body_b.collision_group) != 0 ||
+          (disabled_b & body_a.collision_group) != 0;
       if (!mask_candidate) {
         continue;
       }
