@@ -238,11 +238,17 @@ void BoneConverter::compute_from_pose_bone(const bPoseChannel &pchan,
   copy_m3_m4(arm_rot, bone->arm_mat);
   normalize_m3(arm_rot);
 
-  /* Swap Y and Z columns: converts the bone's rest rotation from Blender's
-   * Z-up coordinate system to MMD's Y-up system. After this, arm_rot
-   * represents the bone's rest rotation as if it were in MMD coordinates. */
-  for (int i = 0; i < 3; i++) {
-    std::swap(arm_rot[i][1], arm_rot[i][2]);
+  /* [世界的歌] 修复：与 mmd_tools BoneConverter 完全一致。mmd_tools 是
+   * mat = bone.matrix_local.to_3x3(); mat[1],mat[2] = mat[2],mat[1]  (交换【行】1↔2)
+   * 然后 mat.transposed()。原代码是交换【列】（每行的第1、2列）再转置，
+   * 两者不相等，导致 q_conv 错误 → VMD 骨骼姿态/朝向错乱（模型上下翻转、
+   * 站不到地面、裙子错位）。这里改成与 mmd_tools 一致：交换行再转置。 */
+  {
+    /* 交换 行 1 与 行 2 */
+    float tmp[3];
+    copy_v3_v3(tmp, arm_rot[1]);
+    copy_v3_v3(arm_rot[1], arm_rot[2]);
+    copy_v3_v3(arm_rot[2], tmp);
   }
 
   /* Transpose = invert for a proper rotation matrix (or a reflection when
