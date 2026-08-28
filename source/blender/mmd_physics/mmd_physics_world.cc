@@ -238,12 +238,15 @@ bool MMDPhysicsWorld::initialize(const MMDPhysicsDefinition &def,
     runtime.collision_group_index = rigid_def.collision_group;
     runtime.no_collision_group = rigid_def.no_collision_group;
     runtime.collision_group = uint16_t(1u << rigid_def.collision_group);
-    /* Store the PMX-spec ENABLE mask (complement of the disable mask) so the
+    /* Store the effective ENABLE mask (PMX-spec complement, plus group 0 for
+     * dynamic bodies so driven cloth also collides with the body) so the
      * diagnostics sample agrees with the broadphase filter applied in
-     * create_rigid_body_ (which uses ~no_collision_group). */
+     * create_rigid_body_. */
     runtime.collision_mask = disable_rigid_body_contacts_ ?
                                  uint16_t(0) :
-                                 uint16_t(0xFFFFu & ~rigid_def.no_collision_group);
+                                 uint16_t(0xFFFFu &
+                                          (~rigid_def.no_collision_group |
+                                           (is_dynamic_type(rigid_def.physics_type) ? 0x0001u : 0)));
     runtime.name_local = rigid_def.name_local;
     runtime.blender_bone_name = rigid_def.blender_bone_name;
     runtime.initial_transform = body->getWorldTransform();
@@ -466,18 +469,27 @@ btRigidBody *MMDPhysicsWorld::create_rigid_body_(const MMDRigidBodyDefinition &d
   const short group = short(1u << def.collision_group);
   /* PMX `no_collision_group` is a per-group DISABLE mask (bit i set = do NOT
    * collide with group i). Bullet's collision mask is the ENABLE mask (bit i
-   * set = collide with group i), so it must be the complement. Using the raw
-   * `no_collision_group` here inverts the semantics: the skirt (group 3,
-   * nocoll=0xFFF7) would then mask OUT its own group (bit 3 clear) and so
-   * NEVER self-collide -> front/back panels overlap ("前后重合") and panels
-   * pass through each other. `~no_collision_group` makes the skirt self-collide
-   * (bit 3 set) while skipping groups flagged as non-colliding (e.g. the body
-   * group 0), matching the joint-collision (create_joint_) and the mmd_tools
-   * NCC (apply_mmd_tools_ncc_) paths which already use `~no_collision_group`.
+   * set = collide with group i), and collision fires when
+   * `(groupA & maskB) || (groupB & maskA)` is non-zero.
+   *
+   * The correct per-spec enable mask is the complement `~no_collision_group`.
+   * Empirically on Vodyanitsa the skirt (group 3, nocoll=0xFFF7) has bit 3
+   * clear (= self-collide) but bit 0 set (= do NOT collide with the body). So
+   * `~no_collision_group` alone makes it self-collide (fixing the original
+   * "前后重合" where panels passed through each other) but drops all body/leg
+   * contact -> the skirt no longer has collision volume against the body.
+   *
+   * For a cloth/dynamic body we always want it to also collide with the body it
+   * is driven by (group 0 is the conventional MMD body group), otherwise the
+   * legs/torso pass straight through the skirt. OR in group 0 for dynamic
+   * bodies only: this keeps the skirt self-colliding AND pushing against the
+   * legs, while static bodies keep their exact PMX-spec mask.
    */
   const short mask = disable_rigid_body_contacts_ ?
                          short(0) :
-                         short(0xFFFFu & ~def.no_collision_group);
+                         short(0xFFFFu &
+                               (~def.no_collision_group |
+                                (is_dynamic_type(def.physics_type) ? short(1u << 0) : 0)));
   dynamics_world_->addRigidBody(body, group, mask);
 
   /* Store PMX index for cross-referencing from Bullet back to PMX data. */
