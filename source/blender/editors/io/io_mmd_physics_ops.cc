@@ -4157,6 +4157,24 @@ void mmd_physics_panel_draw(const bContext *C, Panel *panel)
     }
   }
 
+  /* 骨骼显示开关：控制骨架是否显示在网格最前（show_in_front）以及骨骼形态
+   * (display_type)。骨架显示在前时会透出网格，前后裙摆/头发骨架叠加会在
+   * 视口里产生"穿模/前后重合"的观感；关掉"显示在前"或改为细骨(STICK)
+   * 可看清骨架实际朝向，避免把骨架透出误判为网格穿模。 */
+  Object *active_ob = CTX_data_active_object(C);
+  if (active_ob != nullptr && active_ob->type == OB_ARMATURE) {
+    if (ui::Layout *bone_disp = layout.panel(
+            C, "mmd_physics_bonedisplay", false, "骨骼显示"))
+    {
+      PointerRNA ob_ptr = RNA_id_pointer_create(&active_ob->id);
+      bone_disp->prop(&ob_ptr, "show_in_front", UI_ITEM_NONE, "显示在最前", ICON_BONE_DATA);
+      if (active_ob->data != nullptr) {
+        PointerRNA arm_ptr = RNA_id_pointer_create(reinterpret_cast<ID *>(active_ob->data));
+        bone_disp->prop(&arm_ptr, "display_type", UI_ITEM_NONE, "骨骼形态", ICON_BONE_DATA);
+      }
+    }
+  }
+
 }
 
 }  // namespace
