@@ -1046,6 +1046,19 @@ int vmd_suspend_all_ik_after_bake(Main *bmain, Object *ob)
   return suspended;
 }
 
+int vmd_tools_prepare_imported_action(Main *bmain, Object *ob, ReportList *reports)
+{
+  if (ob == nullptr) {
+    return 0;
+  }
+  int suspended = 0;
+  if (ob->pose != nullptr) {
+    suspended = vmd_suspend_mmd_approx_constraints(bmain, ob);
+  }
+  vmd_activate_rigify_playback_mode(bmain, *ob, reports);
+  return suspended;
+}
+
 void WM_OT_vmd_import(wmOperatorType *ot)
 {
   ot->name = "Import VMD";

@@ -346,6 +346,15 @@ static wmOperatorStatus mmd_tools_import_vmd_exec(bContext *C, wmOperator *op)
   if (!success) {
     return OPERATOR_CANCELLED;
   }
+  /* 与原生 VMD 导入一致的关键导入后处理：挂起会双重叠加的轴/追加近似约束、
+   * 还原 Rigify 播放模式,避免 iTaSC/原生 CCD 双重求解把腿拉向原点。 */
+  const int suspended = vmd_tools_prepare_imported_action(bmain, target, op->reports);
+  if (suspended > 0) {
+    BKE_reportf(op->reports,
+                RPT_INFO,
+                "已挂起 %d 个 MMD 轴近似约束（IK 链由 VMD 开关轨道驱动）",
+                suspended);
+  }
   BKE_reportf(op->reports,
               RPT_INFO,
               "VMD 导入完成：%d 条骨骼轨道，%d 骨骼帧",
