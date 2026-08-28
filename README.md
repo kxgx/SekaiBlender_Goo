@@ -110,12 +110,11 @@ Keep the extracted folder intact: the executables load the `5.3` runtime directo
 
 ### Requirements
 
-- **Visual Studio 2022 with MSVC toolset 14.44.35207 (17.14.14)** — required, not optional. The prebuilt `lib\windows_x64` third-party libraries (absl/Alembic/manifold) are built with the 14.44 STL, so linking against them needs the matching toolset; using the default 14.4x fails with `LNK2019` (e.g. `__std_find_last_of_trivial_pos_1`).
+- Visual Studio 2022 with MSVC toolset 14.44.35207 (17.14.14) — the prebuilt `lib\windows_x64` libraries require it; the default toolset links with `LNK2019`
 - CMake 3.21 or newer
 - Python 3.11 for the embedded runtime
 - Git LFS and Git submodules
 - CUDA Toolkit and OptiX SDK are optional GPU acceleration dependencies
-- (optional) Ninja — the CMake `-G Ninja` generator is used when you build from a `vcvarsall` shell (see below)
 
 ### Clone
 
@@ -131,24 +130,16 @@ The repository uses Git LFS for Blender test assets and other binary resources. 
 
 ### Configure, Build And Run
 
-Open a **x64** developer shell pinned to the 14.44 toolset, then configure and build. The repository's stock `make.bat` / MSBuild path can trip over toolset detection, so the reliable route is Ninja from the pinned `vcvarsall` environment:
-
 ```powershell
-# x64 developer shell with the required toolset
-call "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build\vcvarsall.bat" x64 -vcvars_ver=14.44.35207
-
-cmake -S . -B ..\build -G Ninja `
-  -DCMAKE_BUILD_TYPE=Release `
-  -DCMAKE_C_COMPILER=cl -DCMAKE_CXX_COMPILER=cl `
+cmake -S . -B ..\build -G "Visual Studio 17 2022" -A x64 `
   -DWITH_CYCLES_CUDA_BINARIES=ON `
   -DWITH_CYCLES_DEVICE_OPTIX=ON
 
-ninja -C ..\build
-ninja -C ..\build install          # refresh the runtime 5.3/scripts tree used by the packaged exe
-..\build\bin\SekaiBlender.exe
+cmake --build ..\build --config Release --target INSTALL
+..\build\bin\Release\SekaiBlender.exe
 ```
 
-For a CPU-only build, omit the CUDA and OptiX options. The `ninja install` target is intentional: it refreshes the runtime `5.3/scripts` tree used by the packaged executable, and without it the exe reports a side-by-side configuration error.
+For a CPU-only build, omit the CUDA and OptiX options. The `INSTALL` target is intentional: it refreshes the runtime `5.3/scripts` tree used by the packaged executable.
 
 ## Known Limits
 
