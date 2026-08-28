@@ -24,6 +24,7 @@
 #  include "BKE_context.hh"
 #  include "BKE_global.hh"
 #  include "BKE_idprop.hh"
+#  include "BKE_layer.hh"
 #  include "BKE_main.hh"
 #  include "BKE_material.hh"
 #  include "BKE_report.hh"
@@ -376,6 +377,117 @@ void MMD_TOOLS_OT_export_vmd(wmOperatorType *ot)
   RNA_def_float(ot->srna, "coordinate_scale", 0.08f, 0.000001f, 1000.0f, "Coordinate Scale", "", 0.001f, 1.0f);
 }
 
+/* --- VMD camera import / export (delegate to the public camera kernel) -------- */
+
+static wmOperatorStatus mmd_tools_vmd_camera_import_exec(bContext *C, wmOperator *op)
+{
+  const auto paths = ed::io::paths_from_operator_properties(op->ptr);
+  if (paths.is_empty()) {
+    return OPERATOR_CANCELLED;
+  }
+  Main *bmain = CTX_data_main(C);
+  Scene *scene = CTX_data_scene(C);
+  ViewLayer *view_layer = CTX_data_view_layer(C);
+  LayerCollection *active_collection = BKE_layer_collection_get_active_editable(view_layer);
+  Collection *target_collection = active_collection ? active_collection->collection :
+                                                       scene->master_collection;
+  if (target_collection == nullptr) {
+    BKE_report(op->reports, RPT_ERROR, "VMD camera import requires an editable collection");
+    return OPERATOR_CANCELLED;
+  }
+  blender::io::vmd::VMDImportOptions options;
+  options.frame_offset = RNA_int_get(op->ptr, "frame_offset");
+  options.replace_existing_action = RNA_boolean_get(op->ptr, "replace_existing_action");
+  options.coordinate_scale = RNA_float_get(op->ptr, "coordinate_scale");
+  Object *target_camera = nullptr;
+  Object *active_object = CTX_data_active_object(C);
+  if (active_object != nullptr && active_object->type == OB_CAMERA) {
+    target_camera = active_object;
+  }
+  else if (scene->camera != nullptr && scene->camera->type == OB_CAMERA) {
+    target_camera = scene->camera;
+  }
+  blender::io::vmd::VMDImportReport result;
+  if (!blender::io::vmd::import_vmd_camera(
+          bmain, *target_collection, paths[0], options, op->reports, result, target_camera))
+  {
+    return OPERATOR_CANCELLED;
+  }
+  BKE_report(op->reports, RPT_INFO, "VMD camera import complete");
+  return OPERATOR_FINISHED;
+}
+
+static wmOperatorStatus mmd_tools_vmd_camera_export_exec(bContext *C, wmOperator *op)
+{
+  Scene *scene = CTX_data_scene(C);
+  Object *camera = CTX_data_active_object(C);
+  if (camera == nullptr || camera->type != OB_CAMERA) {
+    camera = scene->camera;
+  }
+  if (camera == nullptr || camera->type != OB_CAMERA) {
+    BKE_report(op->reports, RPT_ERROR, "VMD camera export requires an active Camera");
+    return OPERATOR_CANCELLED;
+  }
+  char filepath[FILE_MAX];
+  RNA_string_get(op->ptr, "filepath", filepath);
+  blender::io::vmd::VMDCameraExportOptions options;
+  options.frame_start = RNA_int_get(op->ptr, "frame_start");
+  options.frame_end = RNA_int_get(op->ptr, "frame_end");
+  options.coordinate_scale = RNA_float_get(op->ptr, "coordinate_scale");
+  blender::io::vmd::VMDCameraExportReport report;
+  if (!blender::io::vmd::export_vmd_camera(*camera, filepath, options, op->reports, report)) {
+    return OPERATOR_CANCELLED;
+  }
+  BKE_report(op->reports, RPT_INFO, "VMD camera export complete");
+  return OPERATOR_FINISHED;
+}
+
+void MMD_TOOLS_OT_vmd_camera_import(wmOperatorType *ot)
+{
+  ot->name = "Import VMD Camera";
+  ot->description = "Import VMD camera motion (mmd_tools namespace)";
+  ot->idname = "MMD_TOOLS_OT_vmd_camera_import";
+  ot->invoke = ed::io::filesel_drop_import_invoke;
+  ot->exec = mmd_tools_vmd_camera_import_exec;
+  ot->poll = WM_operator_winactive;
+  ot->flag = OPTYPE_UNDO | OPTYPE_PRESET;
+  WM_operator_properties_filesel(ot,
+                                 FILE_TYPE_FOLDER,
+                                 FILE_BLENDER,
+                                 FILE_OPENFILE,
+                                 WM_FILESEL_FILEPATH | WM_FILESEL_FILES | WM_FILESEL_SHOW_PROPS,
+                                 FILE_DEFAULTDISPLAY,
+                                 FILE_SORT_DEFAULT);
+  auto *prop = RNA_def_string(ot->srna, "filter_glob", "*.vmd", 0, "Extension Filter", "");
+  RNA_def_property_flag(prop, PROP_HIDDEN);
+  RNA_def_int(ot->srna, "frame_offset", 0, -1000, 1000, "Frame Offset", "", -1000, 1000);
+  RNA_def_boolean(ot->srna, "replace_existing_action", true, "Replace Existing Action", "");
+  RNA_def_float(ot->srna, "coordinate_scale", 0.08f, 0.000001f, 1000.0f, "Coordinate Scale", "", 0.001f, 1.0f);
+}
+
+void MMD_TOOLS_OT_vmd_camera_export(wmOperatorType *ot)
+{
+  ot->name = "Export VMD Camera";
+  ot->description = "Export the active Camera as VMD camera motion (mmd_tools namespace)";
+  ot->idname = "MMD_TOOLS_OT_vmd_camera_export";
+  ot->invoke = ed::io::filesel_drop_import_invoke;
+  ot->exec = mmd_tools_vmd_camera_export_exec;
+  ot->poll = WM_operator_winactive;
+  ot->flag = OPTYPE_PRESET;
+  WM_operator_properties_filesel(ot,
+                                 FILE_TYPE_FOLDER,
+                                 FILE_BLENDER,
+                                 FILE_SAVE,
+                                 WM_FILESEL_FILEPATH | WM_FILESEL_SHOW_PROPS,
+                                 FILE_DEFAULTDISPLAY,
+                                 FILE_SORT_DEFAULT);
+  auto *prop = RNA_def_string(ot->srna, "filter_glob", "*.vmd", 0, "Extension Filter", "");
+  RNA_def_property_flag(prop, PROP_HIDDEN);
+  RNA_def_int(ot->srna, "frame_start", 0, 0, 1048574, "Start Frame", "", 0, 1048574);
+  RNA_def_int(ot->srna, "frame_end", 250, 0, 1048574, "End Frame", "", 0, 1048574);
+  RNA_def_float(ot->srna, "coordinate_scale", 0.08f, 0.000001f, 1000.0f, "Coordinate Scale", "", 0.001f, 1.0f);
+}
+
 /* --- Rig attach / convert (mmd_tools namespace used by blander_ue5_link) ------ */
 
 static wmOperatorStatus mmd_tools_attach_meshes_exec(bContext *C, wmOperator *op)
@@ -476,6 +588,8 @@ void mmd_tools_ops_register_operators()
   WM_operatortype_append(MMD_TOOLS_OT_export_pmx);
   WM_operatortype_append(MMD_TOOLS_OT_import_vmd);
   WM_operatortype_append(MMD_TOOLS_OT_export_vmd);
+  WM_operatortype_append(MMD_TOOLS_OT_vmd_camera_import);
+  WM_operatortype_append(MMD_TOOLS_OT_vmd_camera_export);
   WM_operatortype_append(MMD_TOOLS_OT_attach_meshes);
   WM_operatortype_append(MMD_TOOLS_OT_convert_to_mmd_model);
   WM_operatortype_append(MMD_TOOLS_OT_edge_preview_setup);
@@ -501,6 +615,8 @@ static void mmd_tools_panel_draw(const bContext * /*C*/, Panel *panel)
   io_layout.op("MMD_TOOLS_OT_export_pmx", IFACE_("Export PMX..."), ICON_EXPORT);
   io_layout.op("MMD_TOOLS_OT_import_vmd", IFACE_("Import VMD..."), ICON_IMPORT);
   io_layout.op("MMD_TOOLS_OT_export_vmd", IFACE_("Export VMD..."), ICON_EXPORT);
+  io_layout.op("MMD_TOOLS_OT_vmd_camera_import", IFACE_("Import VMD Cam..."), ICON_CAMERA_DATA);
+  io_layout.op("MMD_TOOLS_OT_vmd_camera_export", IFACE_("Export VMD Cam..."), ICON_CAMERA_DATA);
 
   ui::Layout &rig_layout = layout.box();
   rig_layout.label(IFACE_("MMD Model"), ICON_NONE);
